@@ -17,7 +17,7 @@ Chrome.
 1. In the Linux terminal, start the server:
 
    ```sh
-   cd ~/chrome-music-player
+   cd ~/platter
    npm start
    ```
 
