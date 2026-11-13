@@ -181,3 +181,8 @@ When adding or removing a file under `app/`, update the `ASSETS` list in
 - The library belongs to the Chrome profile it was scanned in. Clearing
   Chrome's site data for `localhost:7373` removes the library, covers and
   playlists (the music itself is untouched; a scan rebuilds the library).
+
+## License
+
+[MIT](LICENSE). The interface icons are Material Design icon paths by Google,
+used under the Apache License 2.0.

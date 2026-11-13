@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "A music player web app for the music on a (removable) drive. Built for ChromeOS.",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
