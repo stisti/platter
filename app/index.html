@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' blob: data:; media-src blob:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="theme-color" content="#101013" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f6f5f1" media="(prefers-color-scheme: light)">
+  <meta name="color-scheme" content="dark light">
+  <title>Platter</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/app.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body class="booting">
+  <div class="app">
+    <aside class="sidebar" id="sidebar"></aside>
+    <div class="scrim" id="scrim"></div>
+    <main class="main">
+      <div class="topbar">
+        <button class="icon-btn" id="menu-button" type="button" aria-label="Menu" title="Menu">
+          <svg class="icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+        </button>
+        <span class="topbar-title">Platter</span>
+      </div>
+      <div id="banner"></div>
+      <div class="view" id="view" tabindex="-1"></div>
+    </main>
+    <aside class="queue" id="queue" aria-label="Queue" hidden></aside>
+    <footer class="playerbar" id="playerbar"></footer>
+  </div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <noscript>Platter needs JavaScript to run.</noscript>
+</body>
+</html>

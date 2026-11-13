@@ -1,0 +1,21 @@
+{
+  "name": "platter",
+  "version": "1.0.0",
+  "description": "A music player web app for the music on a (removable) drive. Built for ChromeOS.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:e2e": "node --test --test-concurrency=1 test/e2e/*.test.mjs",
+    "test:all": "npm test && npm run test:e2e",
+    "icons": "node scripts/make-icons.mjs",
+    "scan-dir": "node scripts/scan-dir.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "playwright-core": "1.64.1"
+  }
+}
