@@ -1,10 +1,11 @@
 // Service worker: keeps a copy of the app itself so Platter opens even when
-// the server it was installed from is not running (which, on a Chromebook, is
-// whenever the Linux environment is shut down).
+// the site it was installed from can't be reached (offline, or a development
+// server on localhost that isn't running).
 //
-// Strategy: try the network first so updates show up as soon as the server is
-// reachable; fall back to the saved copy otherwise. A refused connection to
-// localhost fails instantly, so there is no waiting when the server is down.
+// Strategy: try the network first, so a new version is used as soon as it is
+// published; fall back to the saved copy otherwise. Publishing a new version
+// needs no change here. A window that stays open while a new version is
+// published is told about it by js/update.js.
 //
 // Only the app's own files are handled here. Music never goes through the
 // service worker - it is read straight from the drive.
@@ -40,6 +41,8 @@ const ASSETS = [
   'js/ui/dom.js',
   'js/ui/playerbar.js',
   'js/ui/views.js',
+  'js/update.js',
+  'js/version.js',
 ];
 
 self.addEventListener('install', (event) => {
@@ -63,6 +66,9 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET') return;
+  // The update check (js/update.js) asks for the published version.js and
+  // must neither get nor overwrite the saved copy.
+  if (request.cache === 'no-store') return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 

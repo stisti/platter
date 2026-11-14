@@ -29,7 +29,10 @@ collection (albums appear as they are found). After that, starting the app is
 instant and rescans only look at files that changed.
 
 Once installed, the app keeps a copy of itself and opens without a network
-connection. When online, it picks up the latest version on the next start.
+connection. When online, it picks up the latest version each time it opens.
+If a new version is published while Platter is open, a banner offers to
+reload; the queue and the place in the song are kept. The version you are
+running is shown next to the name in the sidebar.
 
 The site is published from `main` by GitHub Actions on every push. Your music
 is never uploaded: the page only reads the folder you choose, inside Chrome.
@@ -145,6 +148,7 @@ app/
     queue.js, player.js         play queue; audio playback with next-track preloading
     playlists.js, db.js         playlists; IndexedDB storage
     main.js, ui/                wiring, views, player bar
+    version.js, update.js       the running version; noticing a newer published one
 server.mjs                      static file server for app/
 scripts/                        icons, service installer, command-line scanner
 test/                           unit tests; test/e2e/ browser tests
@@ -176,11 +180,26 @@ When adding or removing a file under `app/`, update the `ASSETS` list in
 
 ### CI and publishing
 
-- `.github/workflows/pr.yml` runs both test suites on every pull request.
+- `.github/workflows/pr.yml` runs both test suites on every pull request,
+  and checks that a change to `app/` comes with a version bump.
 - `.github/workflows/pages.yml` runs the unit tests and publishes `app/` to
   GitHub Pages on every push to `main`. The `github-pages` environment only
   accepts deployments from `main`, so pull requests (including ones from
   forks) cannot publish anything.
+
+### Releasing a version
+
+Every push to `main` is published, but open windows are only told about it
+when the version number changes. So a pull request that changes anything
+under `app/` must also bump the version (the PR checks fail otherwise):
+
+```sh
+npm version minor   # or patch / major
+```
+
+This updates `package.json` and `app/js/version.js` together (a test checks
+they match); commit them with the rest of the change. (`.npmrc` stops
+`npm version` from making a commit and tag of its own.)
 
 ## Limits worth knowing
 

@@ -5,6 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
 import {
   chromePath, startApp, sampleLibrary, writeDrive, removeFromDrive, stubFolderPicker,
@@ -766,6 +767,45 @@ test('installed app keeps working when its server is not running', { skip }, asy
     await app.browser.close();
     app.server.close();
   }
+});
+
+test('version: shown in the sidebar; a newly published one offers a reload', { skip }, async () => {
+  const { version } = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
+  await withApp(async ({ page }) => {
+    assert.equal(await page.locator('#app-version').textContent(), version);
+    // The check has to get past the service worker, so let it take over first.
+    await page.evaluate(() => navigator.serviceWorker.ready);
+    await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
+
+    await page.evaluate(() => window.platter.checkForUpdate());
+    assert.equal(await page.locator('#update-banner .banner').count(), 0, 'no banner while the published version is this one');
+
+    // "Publish" a new version. (context.route, not page.route: requests from
+    // a page that a service worker controls bypass page.route.)
+    const context = page.context();
+    const publish = (v) => context.route('**/js/version.js', (route) => route.fulfill({ contentType: 'text/javascript', body: `export const VERSION = '${v}';\n` }));
+    await publish('99.0.0');
+    await page.evaluate(() => window.platter.checkForUpdate());
+    const banner = page.locator('#update-banner .banner');
+    await banner.waitFor();
+    assert.match(await banner.textContent(), /Platter 99\.0\.0 is available/);
+
+    // Reload starts the published version, which then has nothing to announce.
+    await Promise.all([page.waitForEvent('load'), banner.getByRole('button', { name: 'Reload' }).click()]);
+    await page.waitForSelector('body:not(.booting)');
+    assert.equal(await page.locator('#app-version').textContent(), '99.0.0');
+    await page.evaluate(() => window.platter.checkForUpdate());
+    assert.equal(await banner.count(), 0);
+
+    // Not now: the banner goes, and this window doesn't bring it back.
+    await publish('99.0.1');
+    await page.evaluate(() => window.platter.checkForUpdate());
+    await banner.waitFor();
+    await banner.getByRole('button', { name: 'Not now' }).click();
+    await page.evaluate(() => window.platter.checkForUpdate());
+    assert.equal(await banner.count(), 0);
+    await context.unroute('**/js/version.js');
+  });
 });
 
 test('layout holds at phone width and in the light theme', { skip }, async () => {
