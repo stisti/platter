@@ -15,6 +15,8 @@ import {
   playlistsView, playlistView, searchView, welcomeView, refreshCovers,
 } from './ui/views.js';
 import { mountPlayerBar, mountQueuePanel } from './ui/playerbar.js';
+import { VERSION } from './version.js';
+import { watchForUpdates } from './update.js';
 
 const PREFS_KEY = 'platter.prefs';
 const POSITION_KEY = 'platter.position';
@@ -438,7 +440,13 @@ function buildSidebar() {
   const navLink = (route, label, iconName) => h('a', { class: 'nav-link', href: `#/${route}`, dataset: { route } }, icon(iconName, 20), h('span', null, label));
 
   sidebar.append(
-    h('div', { class: 'brand' }, h('img', { src: 'icons/icon.svg', alt: '', width: 28, height: 28 }), h('span', null, 'Platter')),
+    h(
+      'div',
+      { class: 'brand' },
+      h('img', { src: 'icons/icon.svg', alt: '', width: 28, height: 28 }),
+      h('span', null, 'Platter'),
+      h('span', { class: 'version', id: 'app-version', title: `Platter version ${VERSION}` }, VERSION),
+    ),
     h('label', { class: 'search' }, icon('search', 18), search),
     h(
       'nav',
@@ -554,6 +562,21 @@ function refreshChrome() {
   } else {
     banner.replaceChildren();
   }
+}
+
+/** A newer Platter has been published while this window was open. */
+function showUpdateBanner(version) {
+  const host = $('update-banner');
+  host.replaceChildren(
+    h(
+      'div',
+      { class: 'banner', role: 'status' },
+      icon('refresh', 20),
+      h('span', { class: 'grow' }, `Platter ${version} is available. Reload to start using it; your queue and place in the song are kept.`),
+      h('button', { class: 'btn btn-primary btn-small', type: 'button', onClick: () => location.reload() }, 'Reload'),
+      iconButton('close', 'Not now', () => host.replaceChildren(), { size: 18 }),
+    ),
+  );
 }
 
 // ------------------------------------------------------------------- events
@@ -753,6 +776,7 @@ async function start() {
   if (app.source.state === 'connected') app.rescan({ quiet: true });
 
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch((err) => console.warn('Offline support unavailable:', err));
+  app.checkForUpdate = watchForUpdates(showUpdateBanner);
 }
 
 // Exposed for debugging from the DevTools console (and for the browser tests).

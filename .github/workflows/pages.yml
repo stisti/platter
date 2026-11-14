@@ -1,7 +1,16 @@
 name: Deploy to GitHub Pages
 
-# Every push to main publishes app/ as-is (there is no build step) to
-# GitHub Pages: https://stisti.github.io/platter/
+# Publishes app/ as-is (there is no build step) to GitHub Pages:
+# https://stisti.github.io/platter/
+#
+# Every push to main runs this, but it only deploys when the version in
+# app/js/version.js differs from the one live on the site. So changes can be
+# merged and pile up on main, and a commit that bumps the version (npm
+# version patch|minor|major) releases them. That is also what makes open
+# Platter windows offer the update (app/js/update.js). The live site is
+# asked rather than the previous commit, so a deploy that failed is retried
+# by the next push. Running the workflow by hand (workflow_dispatch) always
+# deploys.
 #
 # Only main can deploy. Besides the branch filter below, the job runs in the
 # github-pages environment, whose deployment branch policy (repo Settings ->
@@ -15,8 +24,8 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# One deploy at a time; queue rather than cancel, so a deploy in flight is
-# never cut off half-way.
+# One run at a time; queue rather than cancel, so a deploy in flight is
+# never cut off half-way (and the next run sees what it published).
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -28,6 +37,8 @@ jobs:
   build:
     runs-on: avrea-ubuntu-latest-1-vcpu
     timeout-minutes: 10
+    outputs:
+      deploy: ${{ steps.release.outputs.deploy }}
     steps:
       - name: Require main
         if: github.ref != 'refs/heads/main'
@@ -37,7 +48,33 @@ jobs:
 
       - uses: actions/checkout@v7
 
+      - id: pages
+        uses: actions/configure-pages@v6
+
+      - name: Is this a new version?
+        id: release
+        env:
+          SITE: ${{ steps.pages.outputs.base_url }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          read_version() { sed -n "s/^export const VERSION = '\([^']*\)';.*/\1/p"; }
+          version=$(read_version < app/js/version.js)
+          if [ -z "$version" ]; then
+            echo "::error::No VERSION found in app/js/version.js"
+            exit 1
+          fi
+          # Unreadable (first deploy, or the site is down): deploy anyway.
+          live=$(curl -fsSL --retry 3 "$SITE/js/version.js?run=$GITHUB_RUN_ID" | read_version || true)
+          echo "Version in the repo: $version; live on the site: ${live:-unknown}"
+          if [ "$EVENT" = workflow_dispatch ] || [ "$live" != "$version" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Not deployed::$version is already live. Bump the version (npm version patch|minor|major) to release what is on main."
+          fi
+
       - uses: actions/setup-node@v7
+        if: steps.release.outputs.deploy == 'true'
         with:
           node-version: 24
           cache: npm
@@ -45,18 +82,20 @@ jobs:
       # The unit tests are quick, and a direct push to main skips the PR
       # checks. (The browser tests ran on the PR; not spending the minutes on
       # them twice.)
-      - run: npm ci
+      - if: steps.release.outputs.deploy == 'true'
+        run: npm ci
       - name: Unit tests
+        if: steps.release.outputs.deploy == 'true'
         run: npm test
 
-      - uses: actions/configure-pages@v6
-
       - uses: actions/upload-pages-artifact@v5
+        if: steps.release.outputs.deploy == 'true'
         with:
           path: app
 
   deploy:
     needs: build
+    if: needs.build.outputs.deploy == 'true'
     runs-on: avrea-ubuntu-latest-1-vcpu
     timeout-minutes: 10
     permissions:
