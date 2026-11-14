@@ -385,7 +385,10 @@ function render({ keepScroll = false } = {}) {
   }
   const search = $('search-input');
   if (search && route.name === 'search' && document.activeElement !== search) search.value = route.param;
-  if (search && route.name !== 'search') search.value = '';
+  // Leaving search clears the box - but not text that is still waiting to be
+  // searched for: a render that lands mid-typing (a scan adding albums, a
+  // navigation that has not rendered yet) must not throw the typing away.
+  if (search && route.name !== 'search' && !search.dataset.pending) search.value = '';
 }
 
 /** Marks the rows of the playing track in whatever view is showing. */
@@ -417,7 +420,9 @@ function buildSidebar() {
     spellcheck: false,
     onInput: () => {
       clearTimeout(searchTimer);
+      search.dataset.pending = 'true';
       searchTimer = setTimeout(() => {
+        delete search.dataset.pending;
         const query = search.value.trim();
         const target = query ? `#/search/${encodeURIComponent(query)}` : `#/${LENSES.includes(app.prefs.lens) ? app.prefs.lens : 'albums'}`;
         // Typing refines one history entry rather than adding one per keystroke.

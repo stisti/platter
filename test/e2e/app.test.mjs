@@ -287,6 +287,13 @@ test('search finds artists, albums and songs, ignoring accents', { skip }, async
     // Clearing the search goes back to the lens that was open.
     await page.locator('#search-input').fill('');
     await page.waitForFunction(() => location.hash === '#/albums');
+
+    // The page re-rendering while a search is still being typed (a scan
+    // adding albums does this) keeps the typing.
+    await page.locator('#search-input').fill('miles');
+    await page.evaluate(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
+    await page.waitForFunction(() => location.hash === '#/search/miles');
+    assert.equal(await page.locator('#search-input').inputValue(), 'miles');
   });
 });
 
