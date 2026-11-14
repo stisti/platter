@@ -34,7 +34,7 @@ If a new version is published while Platter is open, a banner offers to
 reload; the queue and the place in the song are kept. The version you are
 running is shown next to the name in the sidebar.
 
-The site is published from `main` by GitHub Actions on every push. Your music
+The site is published from `main` by GitHub Actions when the version changes. Your music
 is never uploaded: the page only reads the folder you choose, inside Chrome.
 
 ## Using it
@@ -180,26 +180,33 @@ When adding or removing a file under `app/`, update the `ASSETS` list in
 
 ### CI and publishing
 
-- `.github/workflows/pr.yml` runs both test suites on every pull request,
-  and checks that a change to `app/` comes with a version bump.
-- `.github/workflows/pages.yml` runs the unit tests and publishes `app/` to
-  GitHub Pages on every push to `main`. The `github-pages` environment only
-  accepts deployments from `main`, so pull requests (including ones from
-  forks) cannot publish anything.
+- `.github/workflows/pr.yml` runs both test suites on every pull request.
+- `.github/workflows/pages.yml` publishes `app/` to GitHub Pages when a push
+  to `main` changes the version (see below), after running the unit tests.
+  The `github-pages` environment only accepts deployments from `main`, so
+  pull requests (including ones from forks) cannot publish anything.
 
 ### Releasing a version
 
-Every push to `main` is published, but open windows are only told about it
-when the version number changes. So a pull request that changes anything
-under `app/` must also bump the version (the PR checks fail otherwise):
+Merging to `main` doesn't publish anything by itself: changes collect on
+`main` until the version number changes. To release them, bump the version
+and push that to `main`:
 
 ```sh
 npm version minor   # or patch / major
+git commit -am "Version $(node -p 'require("./package.json").version')"
 ```
 
-This updates `package.json` and `app/js/version.js` together (a test checks
-they match); commit them with the rest of the change. (`.npmrc` stops
-`npm version` from making a commit and tag of its own.)
+`npm version` updates `package.json` and `app/js/version.js` together (a
+test checks they match). `.npmrc` stops it from making a commit and tag of
+its own, so the bump can also go into a pull request with the change it
+releases.
+
+The Pages workflow deploys whenever the version in the repo differs from the
+one on the live site, so a failed deploy is retried by the next push.
+Running the workflow by hand (Actions → *Deploy to GitHub Pages* → *Run
+workflow*) always deploys. Open Platter windows notice the new version and
+offer to reload.
 
 ## Limits worth knowing
 
