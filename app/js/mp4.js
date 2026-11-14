@@ -154,6 +154,16 @@ async function readMeta(reader, meta, out) {
   }
 }
 
+/**
+ * Drops trailing NUL characters. A linear scan, because the regex /\u0000+$/
+ * takes quadratic time on a long run of NULs followed by another character.
+ */
+function stripTrailingNuls(s) {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 0) end--;
+  return s.slice(0, end);
+}
+
 async function readItem(reader, type, kind, payload, length, out) {
   const push = (key, value) => {
     if (value) (out.tags[key] ??= []).push(value);
@@ -170,7 +180,7 @@ async function readItem(reader, type, kind, payload, length, out) {
   if (ITEM_MAP[type]) {
     if (kind !== TYPE_UTF8 && kind !== TYPE_UTF16) return;
     const b = await reader.read(payload, length);
-    push(ITEM_MAP[type], (kind === TYPE_UTF16 ? utf16be : utf8).decode(b).replace(/\u0000+$/, '').trim());
+    push(ITEM_MAP[type], stripTrailingNuls((kind === TYPE_UTF16 ? utf16be : utf8).decode(b)).trim());
   } else if (type === 'trkn' || type === 'disk') {
     const b = await reader.read(payload, Math.min(length, 6));
     if (b.length >= 4) {
