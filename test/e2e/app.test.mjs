@@ -12,7 +12,11 @@ import {
 } from './harness.mjs';
 import { buildFlac } from '../helpers/media.mjs';
 
-const skip = chromePath ? false : 'no Chromium found (set CHROME_PATH or run: npx playwright install chromium)';
+const NO_CHROME = 'no Chromium found (set CHROME_PATH or run: npx playwright-core install chromium)';
+// Locally, a missing browser skips these tests. In CI it must not: a run that
+// skipped every browser test would otherwise still go green.
+if (!chromePath && process.env.CI) throw new Error(NO_CHROME);
+const skip = chromePath ? false : NO_CHROME;
 const SAMPLE_TRACKS = 15;
 
 /** Starts the app, optionally with the sample library already chosen and scanned. */
@@ -283,6 +287,13 @@ test('search finds artists, albums and songs, ignoring accents', { skip }, async
     // Clearing the search goes back to the lens that was open.
     await page.locator('#search-input').fill('');
     await page.waitForFunction(() => location.hash === '#/albums');
+
+    // The page re-rendering while a search is still being typed (a scan
+    // adding albums does this) keeps the typing.
+    await page.locator('#search-input').fill('miles');
+    await page.evaluate(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
+    await page.waitForFunction(() => location.hash === '#/search/miles');
+    assert.equal(await page.locator('#search-input').inputValue(), 'miles');
   });
 });
 
@@ -553,7 +564,10 @@ test('drive unplugged while playing: playback stops politely, the library stays,
     await page.waitForSelector('.section-title');
 
     // Trying to play explains what is wrong instead of failing silently or crashing.
+    // (Unplugging already showed the same toast, and it may still be up - so
+    // wait for this attempt to finish before looking.)
     await page.locator('.track', { hasText: 'So What' }).click();
+    await page.waitForFunction(() => window.platter.player.track?.title === 'So What' && window.platter.player.state !== 'loading');
     await expectToast(page, /isn’t connected/);
     const blocked = await playerState(page);
     assert.deepEqual({ state: blocked.state, title: blocked.title }, { state: 'paused', title: 'So What' });

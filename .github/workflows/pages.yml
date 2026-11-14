@@ -1,0 +1,70 @@
+name: Deploy to GitHub Pages
+
+# Every push to main publishes app/ as-is (there is no build step) to
+# GitHub Pages: https://stisti.github.io/platter/
+#
+# Only main can deploy. Besides the branch filter below, the job runs in the
+# github-pages environment, whose deployment branch policy (repo Settings ->
+# Environments -> github-pages) allows main and nothing else. So a workflow
+# run on any other ref - a pull request, a fork, a workflow_dispatch on a
+# feature branch, or an edited copy of this file on a branch - is refused
+# before it gets the token needed to deploy.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time; queue rather than cancel, so a deploy in flight is
+# never cut off half-way.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: avrea-ubuntu-latest-1-vcpu
+    timeout-minutes: 10
+    steps:
+      - name: Require main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Pages is deployed from main only (got $GITHUB_REF)"
+          exit 1
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      # The unit tests are quick, and a direct push to main skips the PR
+      # checks. (The browser tests ran on the PR; not spending the minutes on
+      # them twice.)
+      - run: npm ci
+      - name: Unit tests
+        run: npm test
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: app
+
+  deploy:
+    needs: build
+    runs-on: avrea-ubuntu-latest-1-vcpu
+    timeout-minutes: 10
+    permissions:
+      pages: write      # publish the site
+      id-token: write   # prove to Pages that this run is the one deploying
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
