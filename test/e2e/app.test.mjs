@@ -564,7 +564,10 @@ test('drive unplugged while playing: playback stops politely, the library stays,
     await page.waitForSelector('.section-title');
 
     // Trying to play explains what is wrong instead of failing silently or crashing.
+    // (Unplugging already showed the same toast, and it may still be up - so
+    // wait for this attempt to finish before looking.)
     await page.locator('.track', { hasText: 'So What' }).click();
+    await page.waitForFunction(() => window.platter.player.track?.title === 'So What' && window.platter.player.state !== 'loading');
     await expectToast(page, /isn’t connected/);
     const blocked = await playerState(page);
     assert.deepEqual({ state: blocked.state, title: blocked.title }, { state: 'paused', title: 'So What' });
