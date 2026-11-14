@@ -12,7 +12,11 @@ import {
 } from './harness.mjs';
 import { buildFlac } from '../helpers/media.mjs';
 
-const skip = chromePath ? false : 'no Chromium found (set CHROME_PATH or run: npx playwright install chromium)';
+const NO_CHROME = 'no Chromium found (set CHROME_PATH or run: npx playwright-core install chromium)';
+// Locally, a missing browser skips these tests. In CI it must not: a run that
+// skipped every browser test would otherwise still go green.
+if (!chromePath && process.env.CI) throw new Error(NO_CHROME);
+const skip = chromePath ? false : NO_CHROME;
 const SAMPLE_TRACKS = 15;
 
 /** Starts the app, optionally with the sample library already chosen and scanned. */

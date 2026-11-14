@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Tiny static file server for the app/ folder. No dependencies.
 //
-// It only has to run while you install or update Platter: once installed, the
-// app's service worker keeps a copy and the app opens without this server.
+// A development tool: the published app is served by GitHub Pages
+// (.github/workflows/pages.yml). The browser tests also use this server.
 //
 //   node server.mjs            serve on http://localhost:7373
 //   PORT=8000 node server.mjs  use another port

@@ -14,21 +14,13 @@ Chrome.
 
 ## Install it on the Chromebook
 
-1. In the Linux terminal, start the server:
+1. In Chrome, open **https://stisti.github.io/platter/**.
 
-   ```sh
-   cd ~/platter
-   npm start
-   ```
-
-2. In Chrome, open **http://localhost:7373** — it has to be `localhost`, not
-   `penguin.linux.test`: Chrome only allows folder access on `localhost`.
-
-3. Click the install icon at the right end of the address bar (or
+2. Click the install icon at the right end of the address bar (or
    ⋮ → *Cast, save and share* → *Install page as app…*). Platter now has its
    own window and launcher icon.
 
-4. Plug in the drive, press **Choose music folder**, and pick the folder that
+3. Plug in the drive, press **Choose music folder**, and pick the folder that
    holds your music. If Chrome refuses the top level of the drive, pick the
    music folder inside it instead.
 
@@ -36,10 +28,11 @@ The first scan reads the tags of every file, which takes a while on a large
 collection (albums appear as they are found). After that, starting the app is
 instant and rescans only look at files that changed.
 
-**The server only matters for installing and updating.** Once installed, the
-app keeps a copy of itself and opens without the server, and without Linux
-running. If you would rather have the server always available whenever Linux
-is up, run `scripts/install-service.sh` once (`--remove` undoes it).
+Once installed, the app keeps a copy of itself and opens without a network
+connection. When online, it picks up the latest version on the next start.
+
+The site is published from `main` by GitHub Actions on every push. Your music
+is never uploaded: the page only reads the folder you choose, inside Chrome.
 
 ## Using it
 
@@ -157,14 +150,23 @@ scripts/                        icons, service installer, command-line scanner
 test/                           unit tests; test/e2e/ browser tests
 ```
 
+To run the app from a working copy, start the development server and open
+**http://localhost:7373** — it has to be `localhost`, not
+`penguin.linux.test`: Chrome only allows folder access on `localhost` or
+HTTPS. (`scripts/install-service.sh` keeps it running whenever Linux is up;
+`--remove` undoes it.)
+
 ```sh
+npm install
+npm start           # http://localhost:7373
 npm test            # unit tests (Node only)
 npm run test:e2e    # the real app in headless Chromium, against a simulated drive
 npm run test:all
 ```
 
 The browser tests need a Chromium: one downloaded by Playwright
-(`npx playwright install chromium`), a system one, or `CHROME_PATH=…`. They
+(`npx playwright-core install chromium`), a system one, or `CHROME_PATH=…`;
+without one they are skipped (in CI, where `CI` is set, they fail instead). They
 simulate the drive with a folder in the browser's private file system, which
 provides the same kind of folder handle Chrome gives for a real drive —
 including the way it fails when the folder disappears.
@@ -172,15 +174,25 @@ including the way it fails when the folder disappears.
 When adding or removing a file under `app/`, update the `ASSETS` list in
 `app/sw.js` (a test checks this).
 
+### CI and publishing
+
+- `.github/workflows/pr.yml` runs both test suites on every pull request.
+- `.github/workflows/pages.yml` runs the unit tests and publishes `app/` to
+  GitHub Pages on every push to `main`. The `github-pages` environment only
+  accepts deployments from `main`, so pull requests (including ones from
+  forks) cannot publish anything.
+
 ## Limits worth knowing
 
 - Chrome (or another Chromium browser) only: Platter depends on the File
   System Access API.
 - Track changes are near-gapless (the next track is loaded in advance), not
   sample-accurate gapless.
-- The library belongs to the Chrome profile it was scanned in. Clearing
-  Chrome's site data for `localhost:7373` removes the library, covers and
-  playlists (the music itself is untouched; a scan rebuilds the library).
+- The library belongs to the Chrome profile and the address it was scanned
+  in: the app from `stisti.github.io` and one served from `localhost` have
+  separate libraries. Clearing Chrome's site data for the address removes the
+  library, covers and playlists (the music itself is untouched; a scan
+  rebuilds the library).
 
 ## License
 
