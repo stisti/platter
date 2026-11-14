@@ -25,6 +25,10 @@ if (!root || root.startsWith('-')) {
   process.exit(2);
 }
 
+// File names and tag text come from the drive and may hold terminal escape
+// sequences. Show C0/C1 control characters as U+FFFD instead of printing them.
+const printable = (s) => String(s).replace(/[\u0000-\u001f\u007f-\u009f]/g, '\uFFFD');
+
 const files = [];
 let protectedFiles = 0;
 const images = new Map();
@@ -65,7 +69,7 @@ for (const [i, path] of files.entries()) {
     else protectedFiles++;
   } catch (err) {
     failed++;
-    if (failed <= 10) console.warn(`  could not read ${path}: ${err.message}`);
+    if (failed <= 10) console.warn(`  could not read ${printable(path)}: ${printable(err.message)}`);
   }
   if ((i + 1) % 500 === 0) process.stdout.write(`  ${i + 1}\r`);
 }
@@ -98,11 +102,11 @@ Tags read in ${((read - walked) / 1000).toFixed(1)} s (${failed} unreadable).
   Albums without a year                      ${count(albums, (a) => !a.year).toLocaleString()}
   Albums filed under "Various Artists"       ${count(albums, (a) => a.artist === 'Various Artists').toLocaleString()}
 `);
-if (unreadable.length) console.log(`Unreadable folders:\n  ${unreadable.slice(0, 20).join('\n  ')}\n`);
+if (unreadable.length) console.log(`Unreadable folders:\n  ${unreadable.slice(0, 20).map(printable).join('\n  ')}\n`);
 
 const top = (title, items, describe) => {
   console.log(title);
-  for (const item of items) console.log(`  ${describe(item)}`);
+  for (const item of items) console.log(`  ${printable(describe(item))}`);
   console.log('');
 };
 top('Largest genres:', [...lib.sortedGenres].sort((a, b) => b.tracks.length - a.tracks.length).slice(0, 15), (g) => `${String(g.tracks.length).padStart(6)}  ${g.name}`);
