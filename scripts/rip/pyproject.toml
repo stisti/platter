@@ -1,0 +1,16 @@
+# The CD ripper (platter_rip.py). Not part of the web app; see README.md, "Ripping CDs".
+# Run through uv, which creates the environment from uv.lock:
+#   uv run --project scripts/rip scripts/rip/platter_rip.py --help    (or: npm run rip -- --help)
+[project]
+name = "platter-rip"
+version = "1.0.0"
+description = "Rip audio CDs to FLAC for Platter on a Chromebook's Linux environment"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",       # AccurateRip checksums and offset search
+    "soundfile>=0.13",  # FLAC encoding (bundles libsndfile with libFLAC)
+    "mutagen>=1.47",    # Vorbis comment tags
+]
+
+[tool.uv]
+package = false

@@ -86,24 +86,27 @@ to the drive status at the bottom of the sidebar → *Scan for new music*.
 ## Ripping CDs
 
 Chrome cannot read audio CDs, so ripping happens in the Chromebook's Linux
-environment with `scripts/rip/platter_rip.py`, which writes FLAC files
-straight into the music folder. Platter picks the album up on its next scan.
+environment with `scripts/rip/platter_rip.py`. It rips to the Chromebook's
+own disk and copies the finished album into the music folder; Platter picks it
+up on its next scan.
 
 One-time setup:
 
 1. Turn on Linux (Settings → About ChromeOS → Developers) and install
-   [nix](https://nixos.org/download/); the script fetches Python, numpy and
-   `flac` through it on first run.
+   [uv](https://docs.astral.sh/uv/). On first run uv sets up the ripper's
+   Python environment (`scripts/rip/pyproject.toml`, pinned by `uv.lock`).
 2. Share the music drive with Linux: Files app → right-click the drive →
    *Share with Linux*. It appears at `/mnt/shared/removable/<drive name>`.
+3. Tell the ripper where the music folder is, e.g. in `~/.bashrc`:
+   `export PLATTER_MUSIC_DIR=/mnt/shared/removable/<drive name>/Music`
 
 Each time you plug in the CD drive: Settings → About ChromeOS → Developers →
 Linux development environment → *Manage USB devices* → switch the drive on.
 Then put in a disc and run:
 
 ```sh
-npm run rip                          # rips into /mnt/shared/removable/tera/Music
-npm run rip -- --dest /path/Music    # somewhere else
+npm run rip                          # rips into $PLATTER_MUSIC_DIR
+npm run rip -- --dest /path/Music    # somewhere else this time
 npm run rip -- --info                # look the disc up, don't rip
 ```
 
@@ -124,12 +127,23 @@ What it does:
 - **Tags and cover from MusicBrainz.** Artist, album, titles, track and disc
   numbers, date, genre, label and MusicBrainz IDs, plus `cover.jpg` from the
   Cover Art Archive. If several releases match, they are listed and the first
-  is used; pick another with `--release N`. A disc MusicBrainz does not know
+  is used; pick another with `--release N`. For a multi-disc set the disc is
+  recognised by its ID; when MusicBrainz cannot tell (it says so), give
+  `--disc N`. A disc MusicBrainz does not know
   becomes "Track 01…"; give `--artist` and `--album` for the folder and tags.
 - **Files:** `<Album artist>/<Album>/NN Title.flac` (`D-NN Title.flac` on
-  multi-disc releases), FLAC level 8. Existing files are never overwritten.
-  The disc's table of contents is sent to MusicBrainz and AccurateRip to look
-  it up; nothing else leaves the Chromebook.
+  multi-disc releases), FLAC level 8, each checked to decode back to exactly
+  the ripped audio.
+- **Nothing half-done on the music drive.** Tracks are written to
+  `~/.cache/platter-rip/<disc ID>/` first. Only when every track is done is
+  the album copied to the music folder: into a hidden folder (Platter skips
+  those), each file checked against the original, then renamed into place.
+  The disc is ejected before the copy, so the next one can go in. An
+  interrupted rip leaves its files only in the cache, and the next rip of
+  that disc starts over. Existing files are never overwritten.
+- **What goes online:** the disc's table of contents to MusicBrainz and
+  AccurateRip, and the chosen release's MusicBrainz ID to the Cover Art
+  Archive. No audio, and nothing about you.
 
 Tests for the ripper: `npm run test:rip`.
 

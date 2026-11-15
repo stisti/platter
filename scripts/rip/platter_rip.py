@@ -1,5 +1,4 @@
-#!/usr/bin/env nix-shell
-#!nix-shell -i python3 -p "python3.withPackages (ps: [ ps.numpy ])" flac
+#!/usr/bin/env python3
 """Rip an audio CD into the music folder Platter reads.
 
 ChromeOS's Linux kernel has no CD-ROM driver (no /dev/sr0, no /dev/sg*), so
@@ -14,10 +13,17 @@ What it does, per disc:
   3. checks each track against AccurateRip; a track that cannot be verified
      there is read a second time and any differing chunks re-read until the
      reads agree;
-  4. writes FLAC files tagged from MusicBrainz, plus cover.jpg, into
-     <dest>/<Album artist>/<Album>/NN Title.flac.
+  4. writes FLAC files tagged from MusicBrainz, plus cover.jpg, into a
+     staging folder on the Chromebook's own disk;
+  5. when every track is done, copies the album to
+     <music folder>/<Album artist>/<Album>/NN Title.flac, checks the copy,
+     and removes the staging folder.
 
-Run with --help for options. See README.md ("Ripping CDs").
+The music folder is $PLATTER_MUSIC_DIR, or --dest.
+
+Run it through uv, which installs the dependencies listed in pyproject.toml
+next to this file:  uv run --project scripts/rip scripts/rip/platter_rip.py
+(or: npm run rip). See README.md ("Ripping CDs").
 """
 
 import argparse
@@ -29,6 +35,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -37,13 +44,17 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import mutagen.flac
 import numpy as np
+import soundfile
 
 SECTOR = 2352                 # bytes of audio per CD sector
 SAMPLES_PER_SECTOR = 588      # stereo 16-bit samples per sector
 CHUNK = 26                    # sectors per READ CD (61 KB, under the 64 KB limit)
 USER_AGENT = 'platter-rip/1.0 ( audio CD ripper )'
-DEFAULT_DEST = '/mnt/shared/removable/tera/Music'
+MUSIC_DIR_ENV = 'PLATTER_MUSIC_DIR'
+STAGING_ROOT = os.path.join(os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~/.cache'),
+                            'platter-rip')
 CONFIG_PATH = os.path.expanduser('~/.config/platter-rip.json')
 
 
@@ -499,17 +510,35 @@ def credit_name(credits):
                    for c in credits or [])
 
 
-def find_medium(release, toc):
-    """The medium of `release` that is this disc."""
-    discid = toc.musicbrainz_id()
+class MediumChoice:
+    """Which medium (disc) of a release this CD is, and how sure we are."""
+
+    def __init__(self, medium, guessed=False):
+        self.medium = medium
+        self.guessed = guessed      # several discs fit equally well; picked the first
+
+
+def find_medium(release, toc, disc=None):
+    """The medium of `release` that is this disc.
+
+    `disc` (1-based position, from --disc) wins. Otherwise the medium carrying
+    this disc's MusicBrainz ID, otherwise the first one with the same number of
+    tracks -- a guess when several have that many.
+    """
     media = release.get('media', [])
+    if disc is not None:
+        for m in media:
+            if m.get('position') == disc:
+                return MediumChoice(m)
+        raise SystemExit(f'--disc {disc}: this release has {len(media)} disc(s).')
+    discid = toc.musicbrainz_id()
     for m in media:
         if any(d.get('id') == discid for d in m.get('discs', [])):
-            return m
-    for m in media:
-        if m.get('track-count') == len(toc.tracks):
-            return m
-    return media[0] if media else None
+            return MediumChoice(m)
+    same = [m for m in media if m.get('track-count') == len(toc.tracks)]
+    if same:
+        return MediumChoice(same[0], guessed=len(same) > 1)
+    return MediumChoice(media[0] if media else None, guessed=len(media) > 1)
 
 
 def describe_release(r):
@@ -520,9 +549,10 @@ def describe_release(r):
     return ' '.join(bits) + (f' ({"; ".join(extra)})' if extra else '')
 
 
-def release_metadata(release, toc):
+def release_metadata(release, toc, disc=None):
     """Album tags and per-track tags from a MusicBrainz release."""
-    medium = find_medium(release, toc)
+    choice = find_medium(release, toc, disc)
+    medium = choice.medium
     group = release.get('release-group', {})
     genres = sorted(release.get('genres') or group.get('genres') or [],
                     key=lambda g: -g.get('count', 0))
@@ -560,9 +590,11 @@ def release_metadata(release, toc):
     return album, tracks
 
 
-def fallback_metadata(toc, artist, album_title):
+def fallback_metadata(toc, artist, album_title, disc=None):
     album = {'ALBUM': album_title or f'Unknown Album ({toc.musicbrainz_id()})',
              'ALBUMARTIST': artist or 'Unknown Artist'}
+    if disc is not None:
+        album['DISCNUMBER'] = str(disc)
     tracks = [{'TITLE': f'Track {i + 1}', 'ARTIST': album['ALBUMARTIST'],
                'TRACKNUMBER': str(i + 1), 'TRACKTOTAL': str(len(toc.tracks))}
               for i in range(len(toc.tracks))]
@@ -607,15 +639,68 @@ def album_folder(dest, album):
 
 
 def encode_flac(pcm, tags, path):
-    part = path + '.part'
-    args = ['flac', '--silent', '--force', '-8', '--force-raw-format', '--endian=little',
-            '--sign=signed', '--channels=2', '--bps=16', '--sample-rate=44100']
+    """Write CD audio as tagged FLAC, and check that it decodes back to exactly `pcm`."""
+    samples = np.frombuffer(pcm, dtype='<i2').reshape(-1, 2)
+    soundfile.write(path, samples, 44100, format='FLAC', subtype='PCM_16',
+                    compression_level=1.0)          # = flac -8
+    flac = mutagen.flac.FLAC(path)
+    flac.clear()                                     # drop libsndfile's own comments
     for k, v in tags.items():
         if v:
-            args += ['-T', f'{k}={v}']
-    args += ['-o', part, '-']
-    subprocess.run(args, input=pcm, check=True)
-    os.replace(part, path)
+            flac[k] = v
+    flac.save()
+    back, _ = soundfile.read(path, dtype='int16', always_2d=True)
+    if not np.array_equal(back, samples):
+        raise RuntimeError(f'{path} does not decode back to the ripped audio')
+
+
+def staging_folder(toc):
+    """Where a disc is ripped before it goes to the music folder (on the Chromebook's disk)."""
+    return os.path.join(STAGING_ROOT, toc.musicbrainz_id())
+
+
+def _digest(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(1 << 20), b''):
+            h.update(block)
+    return h.digest()
+
+
+def install_album(staging, folder):
+    """Copy a finished album from `staging` into `folder`, verified, then delete `staging`.
+
+    A new album appears all at once: it is copied into a hidden folder next to
+    it (Platter skips names starting with '.') that is renamed into place at
+    the end. If the album folder already exists, the files are added to it,
+    each under a hidden name until its copy is verified. Never overwrites.
+    """
+    names = sorted(os.listdir(staging))
+    exists = os.path.isdir(folder)
+    if exists:
+        clash = [n for n in names if os.path.exists(os.path.join(folder, n))]
+        if clash:
+            raise SystemExit(f'{folder} already has {clash[0]}; not overwriting. '
+                             f'The rip is kept in {staging}.')
+        target = folder
+    else:
+        parent, base = os.path.split(folder)
+        os.makedirs(parent, exist_ok=True)
+        target = os.path.join(parent, f'.{base}.platter-rip')
+        shutil.rmtree(target, ignore_errors=True)    # left by an interrupted copy
+        os.makedirs(target)
+    for name in names:
+        src = os.path.join(staging, name)
+        tmp = os.path.join(target, f'.{name}.part')
+        shutil.copyfile(src, tmp)
+        if _digest(tmp) != _digest(src):
+            os.remove(tmp)
+            raise SystemExit(f'Copying {name} to {target} came out different; is the drive OK? '
+                             f'The rip is kept in {staging}.')
+        os.replace(tmp, os.path.join(target, name))
+    if not exists:
+        os.rename(target, folder)
+    shutil.rmtree(staging)
 
 
 # --------------------------------------------------------------------------
@@ -670,13 +755,15 @@ def detect_offset(reader, toc, pressings, log, search=1500):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description='Rip an audio CD to FLAC for Platter.')
-    ap.add_argument('--dest', default=DEFAULT_DEST,
-                    help=f'music folder to rip into (default {DEFAULT_DEST})')
+    ap.add_argument('--dest', default=os.environ.get(MUSIC_DIR_ENV),
+                    help=f'music folder to rip into (default: ${MUSIC_DIR_ENV})')
     ap.add_argument('--device', help='drive node, e.g. /dev/bsg/1:0:0:0 (default: the first CD drive)')
     ap.add_argument('--offset', type=int, help='drive read offset in samples (default: detect)')
     ap.add_argument('--find-offset', action='store_true',
                     help='detect the drive read offset with this disc and remember it')
     ap.add_argument('--release', help='which MusicBrainz release to use: number from the list, or its ID')
+    ap.add_argument('--disc', type=int, metavar='N',
+                    help='which disc of a multi-disc release this is (default: work it out)')
     ap.add_argument('--artist', help='album artist if MusicBrainz does not know the disc')
     ap.add_argument('--album', help='album title if MusicBrainz does not know the disc')
     ap.add_argument('--info', action='store_true', help='look the disc up and stop (no ripping)')
@@ -740,15 +827,21 @@ def main(argv=None):
         log('MusicBrainz does not know this disc.')
 
     if release:
-        album, tracks = release_metadata(release, toc)
+        choice = find_medium(release, toc, args.disc)
+        if choice.guessed:
+            log(f'Note: this release has several discs with {len(toc.tracks)} tracks and MusicBrainz '
+                f'cannot tell which one this is; assuming disc {choice.medium.get("position", 1)}. '
+                'Use --disc N if that is wrong.')
+        album, tracks = release_metadata(release, toc, args.disc)
     else:
-        album, tracks = fallback_metadata(toc, args.artist, args.album)
-    folder = album_folder(args.dest, album)
+        album, tracks = fallback_metadata(toc, args.artist, args.album, args.disc)
+    folder = album_folder(args.dest, album) if args.dest else None
     log(f'Album: {album["ALBUMARTIST"]} – {album["ALBUM"]}')
     for t in tracks:
         log(f'  {int(t["TRACKNUMBER"]):2d}. {t["TITLE"]}'
             + (f'  ({t["ARTIST"]})' if t['ARTIST'] != album['ALBUMARTIST'] else ''))
-    log(f'Into: {folder}')
+    log(f'Into: {folder}' if folder else
+        f'Into: (no music folder: set {MUSIC_DIR_ENV} or use --dest)')
 
     # ---- read offset
     config = load_config()
@@ -776,6 +869,9 @@ def main(argv=None):
         return 0
 
     # ---- rip
+    if not args.dest:
+        raise SystemExit(f'Which music folder should the album go to? Pass --dest, or set it once in '
+                         f'~/.bashrc:  export {MUSIC_DIR_ENV}=/mnt/shared/removable/<drive>/Music')
     if not os.path.isdir(args.dest):
         raise SystemExit(f'{args.dest} does not exist. Is the music drive shared with Linux? '
                          '(Files app → right-click the drive → Share with Linux)')
@@ -784,12 +880,15 @@ def main(argv=None):
     if clash:
         raise SystemExit(f'{folder} already has {clash[0]}; not overwriting. '
                          'Move it away first, or pick another release.')
-    os.makedirs(folder, exist_ok=True)
+    staging = staging_folder(toc)
+    shutil.rmtree(staging, ignore_errors=True)       # an earlier, interrupted rip
+    os.makedirs(staging)
+    log(f'Ripping into {staging}; the album goes to the music folder when every track is done.')
     if release and not any(os.path.exists(os.path.join(folder, n))
                            for n in ('cover.jpg', 'folder.jpg', 'Folder.jpg')):
         cover = fetch_cover(release['id'])
         if cover:
-            with open(os.path.join(folder, 'cover.jpg'), 'wb') as f:
+            with open(os.path.join(staging, 'cover.jpg'), 'wb') as f:
                 f.write(cover)
             log('Cover: cover.jpg')
         else:
@@ -834,17 +933,19 @@ def main(argv=None):
                 status = 'two reads identical' + (' (AccurateRip has a different pressing)'
                                                   if pressings else '')
         summary.append(status)
-        encode_flac(pcm, {**album, **tags}, os.path.join(folder, names[i]))
+        encode_flac(pcm, {**album, **tags}, os.path.join(staging, names[i]))
         log(f'{label}: {names[i]} — {status}')
 
+    if not args.no_eject:
+        drive.eject()                                # the next disc can go in while we copy
+    drive.close()
+    log('Copying the album to the music folder...')
+    install_album(staging, folder)
     log(f'Done in {(time.time() - t0) / 60:.1f} min: {folder}')
     bad = [n for n, s in zip(names, summary) if s.startswith('MAY')]
     if bad:
         log('Tracks that may have errors (try cleaning the disc and ripping again): ' + ', '.join(bad))
     log('In Platter, rescan the music folder to see the new album.')
-    if not args.no_eject:
-        drive.eject()
-    drive.close()
     return 1 if bad else 0
 
 

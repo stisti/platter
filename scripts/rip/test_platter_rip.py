@@ -161,5 +161,94 @@ class NamingTest(unittest.TestCase):
         self.assertEqual(tracks[4]['MUSICBRAINZ_TRACKID'], 'rec5')
 
 
+class DiscChoiceTest(unittest.TestCase):
+    def setUp(self):
+        self.toc = pr.parse_toc(KITARO_TOC)
+
+    def release(self, disc_ids):
+        """Two 9-track discs; disc_ids[n] lists the disc IDs attached to disc n+1."""
+        return {'id': 'r', 'title': 'Set', 'artist-credit': [{'name': 'A'}], 'media': [
+            {'position': n + 1, 'track-count': 9, 'discs': [{'id': d} for d in ids],
+             'tracks': [{'title': f'D{n + 1} T{i}'} for i in range(1, 10)]}
+            for n, ids in enumerate(disc_ids)]}
+
+    def test_disc_id_wins(self):
+        choice = pr.find_medium(self.release([[], [self.toc.musicbrainz_id()]]), self.toc)
+        self.assertEqual((choice.medium['position'], choice.guessed), (2, False))
+
+    def test_guess_is_flagged(self):
+        choice = pr.find_medium(self.release([[], []]), self.toc)
+        self.assertEqual((choice.medium['position'], choice.guessed), (1, True))
+
+    def test_disc_option(self):
+        release = self.release([[self.toc.musicbrainz_id()], []])
+        album, tracks = pr.release_metadata(release, self.toc, disc=2)
+        self.assertEqual((album['DISCNUMBER'], album['DISCTOTAL']), ('2', '2'))
+        self.assertEqual(tracks[0]['TITLE'], 'D2 T1')
+        self.assertEqual(pr.track_filename(album, tracks[0]), '2-01 D2 T1.flac')
+        with self.assertRaises(SystemExit):
+            pr.find_medium(release, self.toc, disc=3)
+
+    def test_disc_option_without_musicbrainz(self):
+        album, _ = pr.fallback_metadata(self.toc, 'A', 'B', disc=2)
+        self.assertEqual(album['DISCNUMBER'], '2')
+
+
+class OutputTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+
+    def staged(self, files):
+        staging = os.path.join(self.root, 'staging')
+        os.makedirs(staging)
+        for name, data in files.items():
+            with open(os.path.join(staging, name), 'wb') as f:
+                f.write(data)
+        return staging
+
+    def test_flac_round_trip_and_tags(self):
+        pcm = np.random.default_rng(3).integers(-32768, 32768, 588 * 75 * 2,
+                                                dtype=np.int64).astype('<i2').tobytes()
+        path = os.path.join(self.root, 't.flac')
+        pr.encode_flac(pcm, {'TITLE': 'Fata Morgana', 'ARTIST': '喜多郎',
+                             'TRACKNUMBER': '2', 'GENRE': ''}, path)
+        back, rate = pr.soundfile.read(path, dtype='int16', always_2d=True)
+        self.assertEqual(rate, 44100)
+        self.assertEqual(back.tobytes(), pcm)
+        tags = pr.mutagen.flac.FLAC(path)
+        self.assertEqual(tags['ARTIST'], ['喜多郎'])
+        self.assertEqual(tags['TRACKNUMBER'], ['2'])
+        self.assertNotIn('GENRE', tags)          # empty values are left out
+
+    def test_new_album_appears_whole(self):
+        staging = self.staged({'01 A.flac': b'one', 'cover.jpg': b'img'})
+        folder = os.path.join(self.root, 'Music', 'Artist', 'Album')
+        # Leftover of an interrupted copy is replaced.
+        os.makedirs(os.path.join(self.root, 'Music', 'Artist', '.Album.platter-rip'))
+        pr.install_album(staging, folder)
+        self.assertEqual(sorted(os.listdir(folder)), ['01 A.flac', 'cover.jpg'])
+        self.assertEqual(os.listdir(os.path.dirname(folder)), ['Album'])
+        self.assertFalse(os.path.exists(staging))
+
+    def test_adds_to_existing_folder_without_overwriting(self):
+        folder = os.path.join(self.root, 'Album')
+        os.makedirs(folder)
+        with open(os.path.join(folder, '01 A.flac'), 'wb') as f:
+            f.write(b'old')
+        staging = self.staged({'02 B.flac': b'two'})
+        pr.install_album(staging, folder)
+        self.assertEqual(sorted(os.listdir(folder)), ['01 A.flac', '02 B.flac'])
+
+        staging = self.staged({'01 A.flac': b'new'})
+        with self.assertRaises(SystemExit):
+            pr.install_album(staging, folder)
+        with open(os.path.join(folder, '01 A.flac'), 'rb') as f:
+            self.assertEqual(f.read(), b'old')
+        self.assertTrue(os.path.exists(staging))  # the rip is kept
+
+
 if __name__ == '__main__':
     unittest.main()
