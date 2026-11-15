@@ -83,6 +83,56 @@ Platter looks for changes on the drive each time it starts with the drive
 connected and each time the drive is plugged in. To do it by hand: **⋮** next
 to the drive status at the bottom of the sidebar → *Scan for new music*.
 
+## Ripping CDs
+
+Chrome cannot read audio CDs, so ripping happens in the Chromebook's Linux
+environment with `scripts/rip/platter_rip.py`, which writes FLAC files
+straight into the music folder. Platter picks the album up on its next scan.
+
+One-time setup:
+
+1. Turn on Linux (Settings → About ChromeOS → Developers) and install
+   [nix](https://nixos.org/download/); the script fetches Python, numpy and
+   `flac` through it on first run.
+2. Share the music drive with Linux: Files app → right-click the drive →
+   *Share with Linux*. It appears at `/mnt/shared/removable/<drive name>`.
+
+Each time you plug in the CD drive: Settings → About ChromeOS → Developers →
+Linux development environment → *Manage USB devices* → switch the drive on.
+Then put in a disc and run:
+
+```sh
+npm run rip                          # rips into /mnt/shared/removable/tera/Music
+npm run rip -- --dest /path/Music    # somewhere else
+npm run rip -- --info                # look the disc up, don't rip
+```
+
+What it does:
+
+- **Reads the drive directly.** The ChromeOS Linux kernel has no CD-ROM
+  driver (no `/dev/sr0`), so cdparanoia, whipper and the like cannot see the
+  drive. The kernel does make a SCSI pass-through node, `/dev/bsg/H:C:T:L`,
+  and the script sends the drive raw `READ CD` commands through it. The first
+  run per plug-in asks `sudo` to give you access to that node.
+- **Correct to the sample.** Audio is corrected for the drive's read offset,
+  which is detected from the first suitable disc (via AccurateRip) and stored
+  in `~/.config/platter-rip.json`. Each track is checked against
+  [AccurateRip](http://www.accuraterip.com/); a track AccurateRip cannot
+  vouch for is read a second time and every chunk that differs is re-read
+  until two reads agree. The summary says which tracks are accurate, which
+  were only compared, and which may have errors.
+- **Tags and cover from MusicBrainz.** Artist, album, titles, track and disc
+  numbers, date, genre, label and MusicBrainz IDs, plus `cover.jpg` from the
+  Cover Art Archive. If several releases match, they are listed and the first
+  is used; pick another with `--release N`. A disc MusicBrainz does not know
+  becomes "Track 01…"; give `--artist` and `--album` for the folder and tags.
+- **Files:** `<Album artist>/<Album>/NN Title.flac` (`D-NN Title.flac` on
+  multi-disc releases), FLAC level 8. Existing files are never overwritten.
+  The disc's table of contents is sent to MusicBrainz and AccurateRip to look
+  it up; nothing else leaves the Chromebook.
+
+Tests for the ripper: `npm run test:rip`.
+
 ## How the library is built
 
 - **Formats:** FLAC, M4A (AAC, as sold by iTunes) and MP3 tags are read in

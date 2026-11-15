@@ -12,6 +12,8 @@
     "test:all": "npm test && npm run test:e2e",
     "icons": "node scripts/make-icons.mjs",
     "scan-dir": "node scripts/scan-dir.mjs",
+    "rip": "scripts/rip/platter_rip.py",
+    "test:rip": "nix-shell -p \"python3.withPackages (ps: [ ps.numpy ])\" --run \"python3 -m unittest discover -s scripts/rip -p test_*.py\"",
     "version": "node scripts/sync-version.mjs && git add app/js/version.js"
   },
   "engines": {
