@@ -17,7 +17,7 @@ node --test test/library.test.mjs                        # one file
 node --test --test-name-pattern='various' test/*.test.mjs  # tests matching a name
 node scripts/scan-dir.mjs /path/to/music --albums        # how the library logic reads a real folder
 npm run rip -- --info         # CD ripper (Python via uv, Linux only); --info looks the disc up without ripping
-npm run test:rip              # ripper unit tests (needs uv; not part of npm test or CI)
+npm run test:rip              # ripper unit tests (needs uv; in test:all and PR CI, not in npm test)
 ```
 
 The CD ripper (`scripts/rip/platter_rip.py`) is separate from the web app: Chrome cannot read audio CDs, and the ChromeOS Linux kernel has no CD driver (no `/dev/sr0`/`/dev/sg*`), so it sends SCSI commands through `/dev/bsg/*` with the SG_IO v4 ioctl. Its deps are in `scripts/rip/pyproject.toml` + `uv.lock` (add with `uv add --project scripts/rip`). It rips into `~/.cache/platter-rip/` and copies the finished album into the music folder (`$PLATTER_MUSIC_DIR` or `--dest`) — only FLAC + `cover.jpg`; the app finds them on rescan. README "Ripping CDs" documents it.

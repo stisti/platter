@@ -229,7 +229,8 @@ npm install
 npm start           # http://localhost:7373
 npm test            # unit tests (Node only)
 npm run test:e2e    # the real app in headless Chromium, against a simulated drive
-npm run test:all
+npm run test:rip    # the CD ripper (Python, through uv)
+npm run test:all    # all three
 ```
 
 The browser tests need a Chromium: one downloaded by Playwright
@@ -244,7 +245,8 @@ When adding or removing a file under `app/`, update the `ASSETS` list in
 
 ### CI and publishing
 
-- `.github/workflows/pr.yml` runs both test suites on every pull request.
+- `.github/workflows/pr.yml` runs the unit, ripper and browser tests on every
+  pull request.
 - `.github/workflows/pages.yml` publishes `app/` to GitHub Pages when a push
   to `main` changes the version (see below), after running the unit tests.
   The `github-pages` environment only accepts deployments from `main`, so

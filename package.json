@@ -9,7 +9,7 @@
     "start": "node server.mjs",
     "test": "node --test test/*.test.mjs",
     "test:e2e": "node --test --test-concurrency=1 test/e2e/*.test.mjs",
-    "test:all": "npm test && npm run test:e2e",
+    "test:all": "npm test && npm run test:rip && npm run test:e2e",
     "icons": "node scripts/make-icons.mjs",
     "scan-dir": "node scripts/scan-dir.mjs",
     "rip": "uv run --project scripts/rip scripts/rip/platter_rip.py",
