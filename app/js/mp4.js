@@ -18,6 +18,10 @@ const ITEM_MAP = {
   '©day': 'DATE',
 };
 
+// Free-form ("----") items worth keeping, by name: the original release date
+// as MusicBrainz Picard and Platter's year tool write it.
+const FREEFORM_MAP = { ORIGINALDATE: 'ORIGINALDATE', ORIGINALYEAR: 'ORIGINALYEAR' };
+
 const MAX_TEXT = 8192;
 const TYPE_UTF8 = 1;
 const TYPE_UTF16 = 2;
@@ -136,7 +140,10 @@ async function readMeta(reader, meta, out) {
     const item = await readBox(reader, pos, ilst.end);
     if (!item) break;
     pos = item.end;
-    if (item.type === '----') continue; // free-form application tags
+    if (item.type === '----') {
+      await readFreeform(reader, item, out);
+      continue;
+    }
 
     let dataPos = item.body;
     for (let n = 0; n < 16; n++) {
@@ -150,6 +157,36 @@ async function readMeta(reader, meta, out) {
       const payload = data.body + 8;
       const length = data.end - payload;
       await readItem(reader, item.type, kind, payload, length, out);
+    }
+  }
+}
+
+/**
+ * A free-form item: `mean` (the namespace), `name`, then `data`. Only the
+ * names in FREEFORM_MAP are read; the rest (iTunes' own iTunNORM, iTunSMPB, …)
+ * are skipped without reading their data.
+ */
+async function readFreeform(reader, item, out) {
+  let key = null;
+  let pos = item.body;
+  for (let n = 0; n < 8; n++) {
+    const child = await readBox(reader, pos, item.end);
+    if (!child) return;
+    pos = child.end;
+    // `mean` and `name` are full boxes: 4 bytes of version/flags, then the text.
+    if (child.type === 'name') {
+      const length = child.end - child.body - 4;
+      if (length <= 0 || length > 64) return;
+      key = FREEFORM_MAP[utf8.decode(await reader.read(child.body + 4, length)).toUpperCase()];
+      if (!key) return;
+    } else if (child.type === 'data' && key) {
+      const length = child.end - child.body - 8;
+      if (length <= 0 || length > MAX_TEXT) return;
+      const head = await reader.read(child.body, 8);
+      if (head.length < 8 || (be32(head, 0) & 0xffffff) !== TYPE_UTF8) return;
+      const value = stripTrailingNuls(utf8.decode(await reader.read(child.body + 8, length))).trim();
+      if (value) (out.tags[key] ??= []).push(value);
+      return;
     }
   }
 }

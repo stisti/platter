@@ -8,7 +8,7 @@ import { parseMp3 } from './id3.js';
 import { parseMp4 } from './mp4.js';
 
 /** Bump when parsing changes in a way that should make a rescan re-read every file. */
-export const TRACK_VERSION = 2;
+export const TRACK_VERSION = 3;
 
 export const AUDIO_EXTENSIONS = new Set(['flac', 'mp3', 'ogg', 'oga', 'opus', 'm4a', 'aac', 'wav']);
 /** Copy-protected iTunes purchases (FairPlay). Recognised only so they can be counted and explained. */
@@ -164,7 +164,10 @@ export function makeTrack(path, { size = 0, mtime = 0 } = {}, parsed = null) {
     compilation: firstTag(tags, 'COMPILATION') === '1',
     trackNo: leadingInt(firstTag(tags, 'TRACKNUMBER', 'TRACK')) ?? guess.trackNo,
     discNo,
+    /** Year of the edition this file comes from (a reissue says when it was reissued). */
     year: yearOf(firstTag(tags, 'DATE', 'YEAR', 'ORIGINALDATE', 'ORIGINALYEAR')),
+    /** Year the album first came out, when the file says so (MusicBrainz's ORIGINALDATE). */
+    originalYear: yearOf(firstTag(tags, 'ORIGINALDATE', 'ORIGINALYEAR')),
     genres: splitGenres(tags.GENRE).filter((g) => !PLACEHOLDER_GENRE.test(g)),
     duration: parsed?.duration ?? null,
     pic: picture ? { o: picture.offset, l: picture.length, m: picture.mime } : null,

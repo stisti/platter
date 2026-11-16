@@ -343,7 +343,9 @@ export function albumView(app, key) {
       }),
     );
   });
-  const facts = [album.year, plural(album.tracks.length, 'track'), album.duration ? formatLength(album.duration) : null].filter(Boolean);
+  // A reissue shows both years: "1985 · 1986 edition".
+  const edition = album.originalYear && album.editionYear && album.editionYear !== album.originalYear ? `${album.editionYear} edition` : null;
+  const facts = [album.year, edition, plural(album.tracks.length, 'track'), album.duration ? formatLength(album.duration) : null].filter(Boolean);
   return h(
     'div',
     { class: 'page' },
