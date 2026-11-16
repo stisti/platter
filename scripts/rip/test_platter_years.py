@@ -43,10 +43,17 @@ class McdiTest(unittest.TestCase):
             self.assertIsNone(py.toc_from_mcdi(bad), bad)
 
     def test_enhanced_cd_variant_drops_the_data_track(self):
-        toc = py.toc_from_mcdi('3+96+1000+2000+9000')
+        toc = py.toc_from_mcdi('3+96+5000+20000+30000')
         alt = py.without_last_track(toc)
         self.assertEqual([n for n, _ in alt.tracks], [1, 2])
         self.assertEqual(alt.leadout, toc.tracks[2][1] - 11400)
+
+    def test_no_enhanced_cd_variant_when_the_last_track_is_too_close(self):
+        # A real disc: track 19 starts 7,000 sectors after track 18, less than the 11,400 data gap.
+        toc = py.toc_from_mcdi('13+B7+2B64+6557+830E+ACE2+DD7A+12674+156A6+18702+1B9C2+1EC85+231E0+26CDA'
+                               '+2B23C+2EB12+31BB2+35E06+3857C+39F60+3F28C')
+        self.assertEqual(len(toc.tracks), 19)
+        self.assertIsNone(py.without_last_track(toc))
 
 
 class TextTest(unittest.TestCase):

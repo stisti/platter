@@ -152,7 +152,10 @@ def without_last_track(toc):
     MusicBrainz leaves out (and puts the audio lead-out 11,400 sectors before it)."""
     if len(toc.tracks) < 2:
         return None
-    return pr.Toc(toc.tracks[:-1], toc.tracks[-1][1] - 11400)
+    leadout = toc.tracks[-1][1] - 11400
+    if leadout <= toc.tracks[-2][1]:
+        return None                     # the last track is too close to be after a data gap: plain audio CD
+    return pr.Toc(toc.tracks[:-1], leadout)
 
 
 # --------------------------------------------------------------------------
@@ -309,7 +312,7 @@ def cached_musicbrainz(path, refresh=False, **params):
             result = pr.musicbrainz(path, **params)
             break
         except urllib.error.HTTPError as e:
-            if e.code == 404:
+            if e.code in (400, 404):    # 400: MusicBrainz finds the request (e.g. a TOC) invalid
                 result = {}
                 break
             if e.code not in (429, 503) or attempt == 7:
