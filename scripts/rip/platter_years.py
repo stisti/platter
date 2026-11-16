@@ -330,6 +330,13 @@ def scan(root, log):
 # --------------------------------------------------------------------------
 # MusicBrainz, with a cache so a second lookup run is quick
 
+class Busy(Exception):
+    """MusicBrainz kept saying it is too busy."""
+
+
+_pace = 0.5
+
+
 def cached_musicbrainz(path, refresh=False, **params):
     key = hashlib.sha1(json.dumps([path, sorted(params.items())]).encode()).hexdigest()
     cache = os.path.join(CACHE_ROOT, 'mb', key + '.json')
@@ -339,23 +346,29 @@ def cached_musicbrainz(path, refresh=False, **params):
                 return json.load(f)
         except (OSError, ValueError):
             pass
+    global _pace
     result = None
-    for attempt in range(8):
+    for attempt in range(6):
+        time.sleep(_pace)               # on top of the ripper's own 1.1 s spacing
         try:
             result = pr.musicbrainz(path, **params)
+            _pace = max(0.5, _pace * 0.9)
             break
         except urllib.error.HTTPError as e:
             if e.code in (400, 404):    # 400: MusicBrainz finds the request (e.g. a TOC) invalid
                 result = {}
                 break
-            if e.code not in (429, 503) or attempt == 7:
+            if e.code not in (429, 503):
                 raise
-            # MusicBrainz is busy or wants us slower: wait as it asks, or back off.
+            # MusicBrainz is busy or wants us slower: go slower from now on, wait as it asks, retry.
+            _pace = min(10.0, _pace * 2)
+            if attempt == 5:
+                raise Busy() from e
             try:
                 wait = float(e.headers.get('Retry-After') or 0)
             except ValueError:
                 wait = 0
-            time.sleep(max(wait, min(60, 2 ** (attempt + 1))))
+            time.sleep(max(wait, min(60, 2 ** (attempt + 2))))
     os.makedirs(os.path.dirname(cache), exist_ok=True)
     with open(cache, 'w') as f:
         json.dump(result, f)
@@ -536,7 +549,8 @@ PLAN_HEADER = """\
 #                Exact disc ID matches are "yes". Name searches and near matches are "check".
 # original_date  what goes into ORIGINALDATE. You may type your own (YYYY or YYYY-MM-DD).
 # current_year   the year the files show now (DATE / YEAR tag), for comparison.
-# method         discid = exact CD match; toc = near-identical CD; search = by name; none = not found.
+# method         discid = exact CD match; toc = near-identical CD; search = by name; none = not found;
+#                error = MusicBrainz could not be asked (run lookup again).
 # release_group  MusicBrainz release group: https://musicbrainz.org/release-group/<id>
 #                Clear it to write only the date.
 # Do not edit album_artist or album: they say which files a row is about.
@@ -745,7 +759,11 @@ def cmd_lookup(args, log):
     log(f'Looking up {len(todo)} albums in MusicBrainz (about one per second; answers are cached) …')
     rows = []
     for n, album in enumerate(sorted(todo, key=lambda a: (fold(a.artist), fold(a.title))), 1):
-        m = lookup(album, args.refresh, log)
+        try:
+            m = lookup(album, args.refresh, log)
+        except (Busy, urllib.error.URLError, OSError) as e:
+            reason = 'MusicBrainz was too busy' if isinstance(e, Busy) else f'lookup failed ({e})'
+            m = Match('error', 'no', note=f'{reason}; run lookup again (finished albums are cached)')
         rows.append({
             'apply': m.decision, 'original_date': m.date, 'current_year': album.current_year or '',
             'method': m.method, 'album_artist': album.artist, 'album': album.title,
@@ -754,6 +772,7 @@ def cmd_lookup(args, log):
         if n % 10 == 0 or n == len(todo):
             log(f'  {n}/{len(todo)}')
     order = {'check': 0, 'yes': 1, 'no': 2, 'same': 3}
+    errors = sum(1 for r in rows if r['method'] == 'error')
     rows.sort(key=lambda r: (order[r['apply']], fold(r['album_artist']), fold(r['album'])))
     write_plan(args.plan, rows)
 
@@ -765,6 +784,9 @@ def cmd_lookup(args, log):
         f'same (year already right): {count["same"]}')
     log(f'  by disc ID: {methods["discid"]}, by table of contents: {methods["toc"]}, '
         f'by name: {methods["search"]}, not found: {methods["none"]}')
+    if errors:
+        log(f'  {errors} album(s) could not be looked up (MusicBrainz busy or offline): '
+            f'run "npm run years -- lookup" again; it only asks about those.')
     log('Edit the plan (change "check" rows to yes or no), then: npm run years -- apply')
 
 
