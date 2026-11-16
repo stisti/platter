@@ -13,6 +13,7 @@
     "icons": "node scripts/make-icons.mjs",
     "scan-dir": "node scripts/scan-dir.mjs",
     "rip": "uv run --project scripts/rip scripts/rip/platter_rip.py",
+    "years": "uv run --project scripts/rip scripts/rip/platter_years.py",
     "test:rip": "uv run --project scripts/rip python -m unittest discover -s scripts/rip -p \"test_*.py\"",
     "version": "node scripts/sync-version.mjs && git add app/js/version.js"
   },
