@@ -6,7 +6,7 @@ Platter is a music player PWA for a Chromebook: it reads music from a user-chose
 
 ## Commands
 
-No build step, no runtime dependencies — `app/` is served as-is. Node >= 20; the only dev dependency is `playwright-core`.
+No build step — `app/` is served as-is. The one runtime dependency, SQLite WASM for the Query page, is vendored in `app/vendor/sqlite/` (README "Development" says how to update it). Node >= 20; the only dev dependency is `playwright-core`.
 
 ```sh
 npm start                     # dev server on http://localhost:7373 (PORT=… to change)
@@ -30,7 +30,7 @@ The CD ripper (`scripts/rip/platter_rip.py`) is separate from the web app: Chrom
 
 **Pure modules vs. browser modules.** The data logic is written to run unchanged in both the browser and Node, which is how unit tests and `scripts/scan-dir.mjs` exercise it:
 
-- Pure (Node-importable): `bytes.js`, `flac.js` / `mp4.js` / `id3.js` (tag parsers), `tags.js` (file → track record, falling back to the path), `library.js` (track records → albums/artists/genres/search), `coverpick.js`, `scanner.js` (takes a directory handle and an injected `readTrack`), `queue.js`.
+- Pure (Node-importable): `bytes.js`, `flac.js` / `mp4.js` / `id3.js` (tag parsers), `tags.js` (file → track record, falling back to the path), `library.js` (track records → albums/artists/genres/search), `coverpick.js`, `scanner.js` (takes a directory handle and an injected `readTrack`), `queue.js`, `genres.js` (genre → families), `sqlrows.js` (SQL schema + built library → table rows), `sqldb.js` (lazily `import()`s the vendored SQLite; Node tests pass the `.wasm` bytes via `test/helpers/sqlite.mjs`).
 - Browser-only: `db.js` (IndexedDB), `source.js` (folder handle, permission, drive connected/disconnected), `covers.js`, `player.js`, `playlists.js`, `update.js`, `main.js` and `ui/`.
 
 Keep new library/tag logic in the pure modules so it stays testable in Node. Tests feed them synthetic media built by `test/helpers/media.mjs` (`buildFlac`, `buildM4a`, `buildId3v2`, `fakeDirectory`, …) rather than fixture files.
@@ -44,11 +44,14 @@ Keep new library/tag logic in the pure modules so it stays testable in Node. Tes
 
 **E2E harness** (`test/e2e/harness.mjs`) simulates the drive with a folder in the browser's origin-private file system (OPFS), which yields real `FileSystemDirectoryHandle`s; "unplugging" deletes that folder. It fails tests on any page error or `console.error`.
 
+**SQL queries** (`#/query`, `ui/query.js`). `app.sqlDatabase()` in `main.js` fills an in-memory SQLite from the *built* library (`libraryRows(lib)`), not from stored records, and refills only when `app.lib` is replaced or `app.sql.changes` is bumped (playlists, covers, setup SQL). Schema changes go in `SCHEMA` and `COLUMNS` in `sqlrows.js` together (`test/sqldb.test.mjs` checks they agree) and in README "Queries". The Query page treats a `path` column as songs and `album_key` as albums. SQL errors are shown inline as `QueryError`, never logged. Saved queries and setup SQL live in IndexedDB `kv` (`savedQueries`, `sqlSetup`).
+
 **Offline + updates.** `app/sw.js` is network-first with a cached fallback. `update.js` polls the published `js/version.js` (with `cache: 'no-store'`) to offer a reload banner in long-open windows.
 
 ## Invariants enforced by tests
 
 - Adding or removing any file under `app/` → update the `ASSETS` list in `app/sw.js` (`test/assets.test.mjs`).
+- The CSP in `index.html` needs `'wasm-unsafe-eval'` for SQLite; without it the Query e2e tests fail.
 - `VERSION` in `app/js/version.js` must equal `package.json` `version` (`test/version.test.mjs`). Never edit it by hand; use `npm version patch|minor|major`, which syncs both via `scripts/sync-version.mjs`. `.npmrc` disables npm's auto commit/tag.
 
 ## Release / CI

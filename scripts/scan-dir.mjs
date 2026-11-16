@@ -6,6 +6,7 @@
 //
 //   node scripts/scan-dir.mjs /path/to/music            summary
 //   node scripts/scan-dir.mjs /path/to/music --albums   also list every album
+//   node scripts/scan-dir.mjs /path/to/music --genres   also list every genre and its families
 //
 // On a Chromebook the USB drive is only visible here after sharing it with
 // Linux: Files app -> right-click the drive -> "Share with Linux". It then
@@ -17,11 +18,12 @@ import { join } from 'node:path';
 
 import { AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, PROTECTED_EXTENSIONS, extensionOf, readTrack } from '../app/js/tags.js';
 import { buildLibrary } from '../app/js/library.js';
+import { GENRE_FAMILIES, familiesOf } from '../app/js/genres.js';
 import { coverCandidates } from '../app/js/coverpick.js';
 
 const [root, ...flags] = process.argv.slice(2);
 if (!root || root.startsWith('-')) {
-  console.error('usage: node scripts/scan-dir.mjs <music folder> [--albums]');
+  console.error('usage: node scripts/scan-dir.mjs <music folder> [--albums] [--genres]');
   process.exit(2);
 }
 
@@ -114,4 +116,13 @@ top('Artists with the most albums:', [...lib.sortedArtists].sort((a, b) => b.alb
 
 if (flags.includes('--albums')) {
   top('Albums:', albums, (a) => `${a.artist} — ${a.title}${a.year ? ` (${a.year})` : ''}  [${a.tracks.length} ${a.tracks.length === 1 ? 'track' : 'tracks'}${a.discCount > 1 ? `, ${a.discCount} discs` : ''}${coverCandidates(a, images).length ? '' : ', no cover'}]`);
+}
+
+if (flags.includes('--genres')) {
+  // A genre that app/js/genres.js does not know (and that is not a family name
+  // itself) is only in its own family, so a query by family misses it: marked *.
+  const known = new Set([...Object.keys(GENRE_FAMILIES), ...Object.values(GENRE_FAMILIES).flat()]);
+  top('Genres (songs, then the families a query sees; * = not in the default mapping):', lib.sortedGenres, (g) =>
+    `${String(g.tracks.length).padStart(6)}  ${g.name}${known.has(g.key) ? '' : ' *'}  →  ${familiesOf(g.name).join(', ')}`,
+  );
 }

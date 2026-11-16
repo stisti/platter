@@ -72,7 +72,7 @@ const albumHref = (album) => `#/album/${encodeURIComponent(album.key)}`;
 const artistHref = (name) => `#/artist/${encodeURIComponent(keyOf(name))}`;
 const genreHref = (genre) => `#/genre/${encodeURIComponent(genre.key)}`;
 
-function pageHeader(title, subtitle, ...actions) {
+export function pageHeader(title, subtitle, ...actions) {
   return h(
     'header',
     { class: 'page-header' },
@@ -81,14 +81,14 @@ function pageHeader(title, subtitle, ...actions) {
   );
 }
 
-function playButtons(app, getTracks) {
+export function playButtons(app, getTracks) {
   return [
     h('button', { class: 'btn btn-primary', type: 'button', onClick: () => app.play(getTracks(), null, { shuffle: false }) }, icon('play', 18), 'Play'),
     h('button', { class: 'btn', type: 'button', onClick: () => app.play(getTracks(), null, { shuffle: true }) }, icon('shuffle', 18), 'Shuffle'),
   ];
 }
 
-function emptyState(iconName, title, text, ...actions) {
+export function emptyState(iconName, title, text, ...actions) {
   return h(
     'div',
     { class: 'empty' },
@@ -137,7 +137,7 @@ function albumCard(app, album, { showArtist = true } = {}) {
   });
 }
 
-function albumGrid(app, albums, options) {
+export function albumGrid(app, albums, options) {
   return h('div', { class: 'grid' }, albums.map((album) => albumCard(app, album, options)));
 }
 
@@ -145,7 +145,7 @@ function albumGrid(app, albums, options) {
  * One row in a list of tracks. Clicking plays the track within its list, so
  * playback carries on with whatever follows it.
  */
-function trackRow(app, track, { list, index, number = null, showArtist = true, showAlbum = false, menuItems = null, leading = null }) {
+export function trackRow(app, track, { list, index, number = null, showArtist = true, showAlbum = false, menuItems = null, leading = null }) {
   const playing = app.player.track?.path === track.path;
   const play = () => app.play(list, index);
   const menu = (anchor) => app.trackMenu(anchor, track, menuItems);
@@ -183,7 +183,7 @@ function trackRow(app, track, { list, index, number = null, showArtist = true, s
  * Renders only the rows that are on screen, so a list of tens of thousands of
  * songs scrolls as smoothly as a list of ten.
  */
-function virtualList(app, { count, rowHeight, renderRow }) {
+export function virtualList(app, { count, rowHeight, renderRow }) {
   const scroller = app.scroller;
   const el = h('div', { class: 'vlist' });
   el.style.height = `${count * rowHeight}px`;

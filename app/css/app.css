@@ -439,6 +439,53 @@ a.pb-title[href]:hover, a.pb-artist[href]:hover { text-decoration: underline; }
 .toast-action { border: 0; background: none; color: var(--accent); font-weight: 700; cursor: pointer; padding: 2px 4px; white-space: nowrap; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
 
+/* ----------------------------------------------------------------- query */
+
+.query-layout { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 18px; margin-bottom: 22px; }
+.query-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.query-sql {
+  width: 100%; min-height: 168px; resize: vertical; padding: 12px 14px; border-radius: var(--radius);
+  background: var(--surface); color: var(--text); border: 1px solid var(--border); outline: 0;
+  font: 13px/1.55 'Roboto Mono', ui-monospace, 'Cascadia Mono', Menlo, Consolas, monospace; tab-size: 2; user-select: text;
+}
+.query-sql:focus { border-color: var(--accent); }
+.query-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.query-schema {
+  max-height: 240px; overflow: auto; padding: 10px 12px; border-radius: var(--radius);
+  background: var(--surface); border: 1px solid var(--border); font-size: 13px;
+}
+.query-schema .eyebrow { margin-bottom: 6px; }
+.query-object summary { cursor: pointer; padding: 2px 0; }
+.query-object ul { list-style: none; margin: 0 0 6px; padding-left: 16px; }
+.query-object li { padding: 1px 0; }
+.link-btn { background: none; border: 0; padding: 0; color: inherit; font: inherit; cursor: pointer; }
+.link-btn:hover { color: var(--accent); text-decoration: underline; }
+.query-chip { display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px 2px 12px; font-size: 13px; color: var(--text); }
+.query-chip .chip-delete { width: 22px; height: 22px; }
+.query-setup { font-size: 13px; }
+.query-setup > summary { cursor: pointer; color: var(--muted); padding: 2px 0; width: max-content; }
+.query-setup[open] { display: flex; flex-direction: column; gap: 8px; }
+.query-setup p { margin: 0; }
+.query-setup-sql { min-height: 96px; }
+.query-error {
+  white-space: pre-wrap; margin: 0; padding: 12px 14px; border-radius: var(--radius);
+  color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent);
+  font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace;
+}
+.query-status { padding: 8px 0; }
+.query-result-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; min-height: 40px; }
+.segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+.segmented button { background: none; border: 0; padding: 6px 14px; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
+.segmented button + button { border-left: 1px solid var(--border); }
+.segmented button.on { background: var(--active); color: var(--text); font-weight: 600; }
+.query-table-wrap { overflow: auto; max-width: 100%; border: 1px solid var(--border); border-radius: var(--radius); }
+.query-table { border-collapse: collapse; font-size: 13px; width: max-content; min-width: 100%; }
+.query-table th, .query-table td { padding: 6px 12px; text-align: left; border-bottom: 1px solid var(--border); max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.query-table th { position: sticky; top: 0; background: var(--surface-2); font-weight: 600; }
+.query-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.query-table td.null { color: var(--muted); font-style: italic; }
+.query-table tbody tr:hover { background: var(--hover); }
+
 /* ------------------------------------------------------------ narrow use */
 
 @media (max-width: 1100px) {
@@ -466,6 +513,8 @@ a.pb-title[href]:hover, a.pb-artist[href]:hover { text-decoration: underline; }
   .pb-art { width: 46px; height: 46px; }
   .track.with-album, .track.reorderable { grid-template-columns: 36px minmax(0, 1fr) 56px 34px; }
   .track.reorderable .drag-handle, .track-album { display: none; }
+  .query-layout { grid-template-columns: minmax(0, 1fr); }
+  .query-hint { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
