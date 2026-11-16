@@ -63,6 +63,26 @@ class TextTest(unittest.TestCase):
         self.assertTrue(py.titles_match('Minimum-Maximum (Live)', 'Minimum‐Maximum'))
         self.assertTrue(py.titles_match('Tuuleen piirretyt vuodet', 'Tuuleen Piirretyt Vuodet'))
         self.assertFalse(py.titles_match('Born to Run', 'Born in the U.S.A.'))
+        self.assertTrue(py.titles_match('X & Y', 'X&Y'))
+        self.assertTrue(py.titles_match('Hunting High & Low', 'Hunting High and Low'))
+        self.assertTrue(py.titles_match('Light and Shade', 'Light + Shade'))
+
+    def test_look_alike_titles_count_only_for_name_searches(self):
+        for ours, theirs in (('Tres Lunas', 'Tr3s Lunas'), ('Alchemy (Live)', 'Alchemy: Dire Straits Live'),
+                             ('R.E.T.R.O.', 'R.E.T.R.O')):
+            self.assertTrue(py.titles_similar(ours, theirs), (ours, theirs))
+        self.assertFalse(py.titles_match('Tres Lunas', 'Tr3s Lunas'))
+        self.assertFalse(py.titles_similar('Hits', 'Hits of the 80s'), 'too short to be a prefix match')
+        self.assertFalse(py.titles_similar('Born to Run', 'Born in the U.S.A.'))
+
+    def test_artists_match_wmp_classical_credits_and_various_artists(self):
+        self.assertTrue(py.artists_match('Howard Shelley: City Of London Sinfonia',
+                                         'Wolfgang Amadeus Mozart; City of London Sinfonia, Howard Shelley'))
+        self.assertTrue(py.artists_match('a-ha', 'a‐ha'))
+        self.assertTrue(py.artists_match('Bruce Springsteen', 'Bruce Springsteen & The E Street Band'))
+        self.assertTrue(py.artists_match('Eri Esittäjiä', 'Various Artists'))
+        self.assertFalse(py.artists_match('Various Artists', 'Queen'))
+        self.assertFalse(py.artists_match('Peter Gabriel', 'Queen'))
 
     def test_search_title_takes_the_itunes_type_suffix_off(self):
         self.assertEqual(py.search_title('Something That You Said - EP'), ('Something That You Said', 'EP'))
@@ -99,8 +119,9 @@ class GroupingTest(unittest.TestCase):
         self.assertEqual(py.group_albums([info(album=None, album_artist=None)]), {})
 
 
-def release(group_id, title, date, kind='Album', secondary=()):
-    return {'release-group': {'id': group_id, 'title': title, 'first-release-date': date,
+def release(group_id, title, date, kind='Album', secondary=(), artist='Bruce Springsteen'):
+    return {'artist-credit': [{'name': artist, 'joinphrase': ''}],
+            'release-group': {'id': group_id, 'title': title, 'first-release-date': date,
                               'primary-type': kind, 'secondary-types': list(secondary)}}
 
 
@@ -128,8 +149,43 @@ class DiscDecisionTest(unittest.TestCase):
         m = py.from_disc_lookup(album('Something else'), res, exact=True)
         self.assertEqual((m.decision, m.group_id), ('check', 'g2'))   # the earlier one, flagged
 
+    def test_near_match_with_unrelated_albums_falls_back_to_search(self):
+        # What a fuzzy TOC lookup really returned for a Finnish Christmas CD.
+        res = {'releases': [release('a', 'Greatest Hits', '1989', artist='Shakin’ Stevens'),
+                            release('b', 'LOVE HATE', '2026-09-09', artist='Someone'),
+                            release('c', 'From Outer Space To Inner Space', '1995', artist='Other')]}
+        self.assertIsNone(py.from_disc_lookup(album('Joulun Tunnelmia', 'Instrumental'), res, exact=False))
+
+    def test_near_match_title_and_artist_must_both_agree_among_several(self):
+        res = {'releases': [release('a', '20 Suosikkia', '1996', artist='Mamba'),
+                            release('b', '20 Suosikkia', '2004-02', artist='Egotrippi'),
+                            release('c', 'Das Nummer 1 Album!', '2010', artist='Various Artists')]}
+        m = py.from_disc_lookup(album('20 Suosikkia', 'Egotrippi'), res, exact=False)
+        self.assertEqual((m.decision, m.group_id), ('yes', 'b'))
+
     def test_nothing_found(self):
         self.assertIsNone(py.from_disc_lookup(album(), {}, exact=False))
+
+
+class LookupTest(unittest.TestCase):
+    def run_lookup(self, found, current_year):
+        a = album()
+        a.files = [info(year=current_year)]
+        saved = py.lookup_disc, py.lookup_search
+        py.lookup_disc, py.lookup_search = (lambda *args: None), (lambda *args: found)
+        try:
+            return py.lookup(a, False, print)
+        finally:
+            py.lookup_disc, py.lookup_search = saved
+
+    def test_a_match_that_would_not_change_the_year_is_left_alone(self):
+        self.assertEqual(self.run_lookup(py.Match('search', 'check', '1984-06-04', 'g'), 1984).decision, 'same')
+        self.assertEqual(self.run_lookup(py.Match('discid', 'yes', '1985', 'g'), 1986).decision, 'yes')
+        self.assertEqual(self.run_lookup(py.Match('discid', 'yes', '1985', 'g'), None).decision, 'yes')
+
+    def test_no_date_or_no_match_is_a_no(self):
+        self.assertEqual(self.run_lookup(py.Match('discid', 'yes', '', 'g'), 1986).decision, 'no')
+        self.assertEqual(self.run_lookup(None, 1986).method, 'none')
 
 
 def group(gid, title, date, kind='Album', artist='Bruce Springsteen', score=100, secondary=()):
@@ -156,6 +212,14 @@ class SearchDecisionTest(unittest.TestCase):
     def test_plain_album_before_live_or_compilation(self):
         res = {'release-groups': [group('live', 'Hits', '2001', secondary=['Live']), group('studio', 'Hits', '1990')]}
         self.assertEqual(py.from_search(album('Hits'), res).group_id, 'studio')
+
+    def test_musicbrainz_spelling_is_found_but_exact_titles_rank_first(self):
+        res = {'release-groups': [group('x', 'Tr3s Lunas', '2002-06-17', artist='Mike Oldfield'),
+                                  group('y', 'Tres Lunas', '2002', artist='Mike Oldfield', secondary=['Compilation'])]}
+        m = py.from_search(album('Tres Lunas', 'Mike Oldfield'), res)
+        self.assertEqual(m.group_id, 'y')
+        res = {'release-groups': [group('x', 'Tr3s Lunas', '2002-06-17', artist='Mike Oldfield')]}
+        self.assertEqual(py.from_search(album('Tres Lunas', 'Mike Oldfield'), res).group_id, 'x')
 
     def test_other_artists_do_not_count(self):
         res = {'release-groups': [group('x', 'Greatest Hits', '1981', artist='Queen')]}

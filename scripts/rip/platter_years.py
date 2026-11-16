@@ -37,6 +37,7 @@ Run it through uv like the ripper:  npm run years -- lookup | apply
 import argparse
 import collections
 import csv
+import difflib
 import hashlib
 import json
 import os
@@ -80,6 +81,7 @@ def fold(s):
     s = unicodedata.normalize('NFKD', s or '')
     s = ''.join(c for c in s if not unicodedata.combining(c)).casefold()
     s = re.sub(r"[.'’`´]", '', s)
+    s = re.sub(r'\s*[&+]\s*', ' and ', s)       # "X&Y" = "X & Y", "Light + Shade" = "Light and Shade"
     return ' '.join(re.findall(r'\w+', s))
 
 
@@ -114,6 +116,37 @@ def titles_match(ours, theirs):
     if a == b:
         return True
     return fold(without_brackets(strip_disc(ours))) == fold(without_brackets(theirs))
+
+
+def titles_similar(ours, theirs):
+    """Looser than titles_match, for name searches (whose rows a human checks anyway):
+    'Tres Lunas' ~ 'Tr3s Lunas', 'Alchemy (Live)' ~ 'Alchemy: Dire Straits Live'."""
+    if titles_match(ours, theirs):
+        return True
+    a, b = fold(without_brackets(strip_disc(ours))), fold(without_brackets(theirs))
+    if not a or not b:
+        return False
+    if difflib.SequenceMatcher(None, a, b).ratio() >= 0.85:
+        return True
+    short, long_ = sorted((a, b), key=len)
+    return len(short) >= 5 and long_.startswith(short + ' ')
+
+
+VARIOUS = {'various artists', 'various', 'va', 'eri esittajia', 'diverse', 'verschiedene interpreten',
+           'various classical artists', 'blandade artister'}
+
+
+def artists_match(ours, theirs):
+    """'Howard Shelley: City Of London Sinfonia' ~ 'Mozart; City of London Sinfonia, Howard Shelley'."""
+    a, b = fold(ours), fold(theirs)
+    if not a or not b:
+        return False
+    if a in VARIOUS or b in VARIOUS:
+        return a in VARIOUS and b in VARIOUS
+    if a == b or a in b or b in a:
+        return True
+    wa, wb = set(a.split()) - {'the', 'and', 'of'}, set(b.split()) - {'the', 'and', 'of'}
+    return bool(wa and wb) and len(wa & wb) * 2 >= min(len(wa), len(wb))
 
 
 def year_of(value):
@@ -346,30 +379,49 @@ def describe_group(g):
 
 
 def from_disc_lookup(album, response, exact):
-    """Decide on the release groups the releases of a disc lookup belong to."""
-    groups = {}
+    """Decide on the release groups the releases of a disc lookup belong to.
+
+    An exact disc ID is trusted. A near match by table of contents is not: CDs
+    with similar track lengths are common, so it needs the title or the artist
+    to agree before it counts (otherwise None, and the album is searched by name).
+    """
+    groups, credits = {}, collections.defaultdict(set)
     for r in response.get('releases', []):
         g = r.get('release-group') or {}
         if g.get('id'):
             groups.setdefault(g['id'], g)
+            credits[g['id']].add(pr.credit_name(r.get('artist-credit')))
     if not groups:
         return None
-    named = [g for g in groups.values() if titles_match(album.title, g.get('title', ''))]
     method = 'discid' if exact else 'toc'
+
+    def named(g):
+        return titles_match(album.title, g.get('title', ''))
+
+    def by_artist(g):
+        return any(artists_match(album.artist, c) for c in credits[g['id']] if c)
+
+    def others(pick):
+        rest = [describe_group(x) for x in groups.values() if x is not pick]
+        return '; '.join(rest[:4]) + ('; …' if len(rest) > 4 else '')
+
     if len(groups) == 1:
         (g,) = groups.values()
-        ok = exact or bool(named)
-        note = '' if titles_match(album.title, g.get('title', '')) else f'MusicBrainz calls it {describe_group(g)}'
+        ok = exact or named(g)
+        note = '' if named(g) else f'MusicBrainz calls it {describe_group(g)}'
         return Match(method, 'yes' if ok else 'check', g.get('first-release-date', ''), g['id'], note)
-    if len(named) == 1:
-        g = named[0]
-        others = '; '.join(describe_group(x) for x in groups.values() if x is not g)
-        return Match(method, 'yes', g.get('first-release-date', ''), g['id'], f'disc also on: {others}')
-    # Several candidates: take the earliest, ask a human.
-    pick = sorted(groups.values(), key=lambda x: x.get('first-release-date') or '9999')[0]
-    others = '; '.join(describe_group(x) for x in groups.values() if x is not pick)
+    best = [g for g in groups.values() if named(g) and (exact or by_artist(g))]
+    if len(best) == 1:
+        g = best[0]
+        return Match(method, 'yes', g.get('first-release-date', ''), g['id'], f'disc also on: {others(g)}')
+    plausible = ([g for g in groups.values() if named(g)] or [g for g in groups.values() if by_artist(g)]
+                 or (list(groups.values()) if exact else []))
+    if not plausible:
+        return None
+    # Several candidates: take the earliest plausible one, ask a human.
+    pick = sorted(plausible, key=lambda x: x.get('first-release-date') or '9999')[0]
     return Match(method, 'check', pick.get('first-release-date', ''), pick['id'],
-                 f'picked {describe_group(pick)}; also: {others}')
+                 f'picked {describe_group(pick)}; also: {others(pick)}')
 
 
 def lookup_disc(album, refresh, log):
@@ -386,7 +438,7 @@ def lookup_disc(album, refresh, log):
         found = None
         for t in variants:
             res = cached_musicbrainz(f'discid/{t.musicbrainz_id()}', refresh, toc=t.musicbrainz_toc(),
-                                     cdstubs='no', inc='release-groups')
+                                     cdstubs='no', inc='release-groups artist-credits')
             found = from_disc_lookup(album, res, exact=bool(res.get('id')))
             if found:
                 break
@@ -411,21 +463,16 @@ TYPE_ORDER = {'Album': 0, 'EP': 1, 'Single': 2}
 
 def from_search(album, response):
     title, hinted = search_title(album.title)
-    want_artist = fold(album.artist)
-    candidates = []
-    for g in response.get('release-groups', []):
-        if not titles_match(title, g.get('title', '')):
-            continue
-        credit = fold(pr.credit_name(g.get('artist-credit')))
-        if not credit or not (credit == want_artist or want_artist in credit or credit in want_artist):
-            continue
-        candidates.append(g)
+    candidates = [g for g in response.get('release-groups', [])
+                  if titles_similar(title, g.get('title', ''))
+                  and artists_match(album.artist, pr.credit_name(g.get('artist-credit')))]
     if not candidates:
         return None
 
     def rank(g):
         kind = g.get('primary-type')
-        return (0 if hinted and kind == hinted else 1,
+        return (0 if titles_match(title, g.get('title', '')) else 1,   # exact titles before look-alikes
+                0 if hinted and kind == hinted else 1,
                 len(g.get('secondary-types') or []),       # a plain album before a live album or compilation
                 TYPE_ORDER.get(kind, 3),
                 -int(g.get('score', 0)),
@@ -439,15 +486,25 @@ def from_search(album, response):
     return Match('search', 'check', pick.get('first-release-date', ''), pick['id'], note)
 
 
+def words(value):
+    """Search terms without Lucene syntax: 'X & Y' -> '(x and y)'."""
+    return '(' + fold(value) + ')'
+
+
 def lookup_search(album, refresh):
+    """By exact phrase first; MusicBrainz's spelling often differs ('X&Y', 'Tr3s Lunas'),
+    so then by words, which finds more and relies on the comparison afterwards."""
     title, _ = search_title(album.title)
-    query = f'releasegroup:{lucene(title)} AND artist:{lucene(album.artist)}'
-    res = cached_musicbrainz('release-group', refresh, query=query, limit=10)
-    match = from_search(album, res)
-    if match is None and without_brackets(title) != title:
-        query = f'releasegroup:{lucene(without_brackets(title))} AND artist:{lucene(album.artist)}'
-        match = from_search(album, cached_musicbrainz('release-group', refresh, query=query, limit=10))
-    return match
+    artist = album.artist if fold(album.artist) not in VARIOUS else 'Various Artists'
+    queries = [f'releasegroup:{lucene(title)} AND artist:{lucene(artist)}']
+    if without_brackets(title) != title:
+        queries.append(f'releasegroup:{lucene(without_brackets(title))} AND artist:{lucene(artist)}')
+    queries.append(f'releasegroup:{words(without_brackets(title))} AND artist:{words(artist)}')
+    for query in queries:
+        match = from_search(album, cached_musicbrainz('release-group', refresh, query=query, limit=15))
+        if match:
+            return match
+    return None
 
 
 def lookup(album, refresh, log):
@@ -459,6 +516,8 @@ def lookup(album, refresh, log):
     if not match.date:
         match.decision = 'no'
         match.note = (match.note + '; ' if match.note else '') + 'MusicBrainz has no release date for it'
+    elif album.current_year and year_of(match.date) == album.current_year:
+        match.decision = 'same'         # nothing visible would change; not worth rewriting the files
     return match
 
 
@@ -472,7 +531,9 @@ PLAN_HEADER = """\
 # Platter: original release dates to add. Edit, then run:  npm run years -- apply
 #
 # apply          yes = write; no = leave alone; check = look first, then change to yes or no.
-#                Exact disc ID matches are "yes". Name searches are "check".
+#                same = found, and the year is the one the files already show: left alone
+#                (change to yes to write it anyway).
+#                Exact disc ID matches are "yes". Name searches and near matches are "check".
 # original_date  what goes into ORIGINALDATE. You may type your own (YYYY or YYYY-MM-DD).
 # current_year   the year the files show now (DATE / YEAR tag), for comparison.
 # method         discid = exact CD match; toc = near-identical CD; search = by name; none = not found.
@@ -692,20 +753,18 @@ def cmd_lookup(args, log):
         })
         if n % 10 == 0 or n == len(todo):
             log(f'  {n}/{len(todo)}')
-    order = {'check': 0, 'no': 1, 'yes': 2}
+    order = {'check': 0, 'yes': 1, 'no': 2, 'same': 3}
     rows.sort(key=lambda r: (order[r['apply']], fold(r['album_artist']), fold(r['album'])))
     write_plan(args.plan, rows)
 
     count = collections.Counter(r['apply'] for r in rows)
     methods = collections.Counter(r['method'] for r in rows)
-    changes = sum(1 for r in rows if r['apply'] == 'yes'
-                  and year_of(r['original_date']) != (int(r['current_year']) if r['current_year'] else None))
     log('')
     log(f'Plan written to {args.plan}')
-    log(f'  yes: {count["yes"]}   check: {count["check"]}   no: {count["no"]}')
+    log(f'  yes: {count["yes"]}   check: {count["check"]}   no: {count["no"]}   '
+        f'same (year already right): {count["same"]}')
     log(f'  by disc ID: {methods["discid"]}, by table of contents: {methods["toc"]}, '
         f'by name: {methods["search"]}, not found: {methods["none"]}')
-    log(f'  {changes} of the "yes" albums get a different year than they show now.')
     log('Edit the plan (change "check" rows to yes or no), then: npm run years -- apply')
 
 
