@@ -163,6 +163,11 @@ class DiscDecisionTest(unittest.TestCase):
         m = py.from_disc_lookup(album('20 Suosikkia', 'Egotrippi'), res, exact=False)
         self.assertEqual((m.decision, m.group_id), ('yes', 'b'))
 
+    def test_near_match_of_a_various_artists_cd_needs_the_title(self):
+        res = {'releases': [release('a', 'Huge Club Tunes', '2005-11-01', artist='Various Artists'),
+                            release('b', 'Premium BEST', '2020-01-29', artist='Various Artists')]}
+        self.assertIsNone(py.from_disc_lookup(album('Valkea Ruusu 20 Suosikkivalssia', 'Various Artists'), res, exact=False))
+
     def test_nothing_found(self):
         self.assertIsNone(py.from_disc_lookup(album(), {}, exact=False))
 

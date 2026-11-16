@@ -412,6 +412,9 @@ def from_disc_lookup(album, response, exact):
         return titles_match(album.title, g.get('title', ''))
 
     def by_artist(g):
+        # "Various Artists" agreeing with "Various Artists" says nothing about a near match.
+        if not exact and fold(album.artist) in VARIOUS:
+            return False
         return any(artists_match(album.artist, c) for c in credits[g['id']] if c)
 
     def others(pick):
