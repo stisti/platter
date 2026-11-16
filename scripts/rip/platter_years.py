@@ -45,6 +45,7 @@ import shutil
 import struct
 import sys
 import tempfile
+import time
 import unicodedata
 import urllib.error
 
@@ -302,12 +303,23 @@ def cached_musicbrainz(path, refresh=False, **params):
                 return json.load(f)
         except (OSError, ValueError):
             pass
-    try:
-        result = pr.musicbrainz(path, **params)
-    except urllib.error.HTTPError as e:
-        if e.code != 404:
-            raise
-        result = {}
+    result = None
+    for attempt in range(8):
+        try:
+            result = pr.musicbrainz(path, **params)
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                result = {}
+                break
+            if e.code not in (429, 503) or attempt == 7:
+                raise
+            # MusicBrainz is busy or wants us slower: wait as it asks, or back off.
+            try:
+                wait = float(e.headers.get('Retry-After') or 0)
+            except ValueError:
+                wait = 0
+            time.sleep(max(wait, min(60, 2 ** (attempt + 1))))
     os.makedirs(os.path.dirname(cache), exist_ok=True)
     with open(cache, 'w') as f:
         json.dump(result, f)

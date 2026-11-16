@@ -17,10 +17,11 @@ node --test test/library.test.mjs                        # one file
 node --test --test-name-pattern='various' test/*.test.mjs  # tests matching a name
 node scripts/scan-dir.mjs /path/to/music --albums        # how the library logic reads a real folder
 npm run rip -- --info         # CD ripper (Python via uv, Linux only); --info looks the disc up without ripping
-npm run test:rip              # ripper unit tests (needs uv; in test:all and PR CI, not in npm test)
+npm run test:rip              # ripper + year tool unit tests (needs uv; in test:all and PR CI, not in npm test)
+npm run years -- lookup       # find original release years for old rips; writes a plan, changes nothing
 ```
 
-The CD ripper (`scripts/rip/platter_rip.py`) is separate from the web app: Chrome cannot read audio CDs, and the ChromeOS Linux kernel has no CD driver (no `/dev/sr0`/`/dev/sg*`), so it sends SCSI commands through `/dev/bsg/*` with the SG_IO v4 ioctl. Its deps are in `scripts/rip/pyproject.toml` + `uv.lock` (add with `uv add --project scripts/rip`). It rips into `~/.cache/platter-rip/` and copies the finished album into the music folder (`$PLATTER_MUSIC_DIR` or `--dest`) — only FLAC + `cover.jpg`; the app finds them on rescan. README "Ripping CDs" documents it.
+The CD ripper (`scripts/rip/platter_rip.py`) is separate from the web app: Chrome cannot read audio CDs, and the ChromeOS Linux kernel has no CD driver (no `/dev/sr0`/`/dev/sg*`), so it sends SCSI commands through `/dev/bsg/*` with the SG_IO v4 ioctl. Its deps are in `scripts/rip/pyproject.toml` + `uv.lock` (add with `uv add --project scripts/rip`). `scripts/rip/platter_years.py` shares that environment and the ripper's MusicBrainz code: it adds `ORIGINALDATE` to existing files (the only code that modifies files already on the drive; it rewrites each file via a verified local copy and never changes existing tags). It rips into `~/.cache/platter-rip/` and copies the finished album into the music folder (`$PLATTER_MUSIC_DIR` or `--dest`) — only FLAC + `cover.jpg`; the app finds them on rescan. README "Ripping CDs" documents it.
 
 - Use `http://localhost:7373`, not `penguin.linux.test`: Chrome only grants folder access on localhost or HTTPS.
 - E2E tests need a Chromium (`$CHROME_PATH`, a Playwright download via `npx playwright-core install chromium`, or a system one — see `scripts/find-chrome.mjs`). Without one they are **skipped** locally but **fail** when `CI` is set.
