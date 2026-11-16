@@ -423,6 +423,8 @@ def from_disc_lookup(album, response, exact):
 
     if len(groups) == 1:
         (g,) = groups.values()
+        if not exact and not (named(g) or by_artist(g)):
+            return None
         ok = exact or named(g)
         note = '' if named(g) else f'MusicBrainz calls it {describe_group(g)}'
         return Match(method, 'yes' if ok else 'check', g.get('first-release-date', ''), g['id'], note)

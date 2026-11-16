@@ -139,7 +139,10 @@ class DiscDecisionTest(unittest.TestCase):
         yes = py.from_disc_lookup(album(), {'releases': [release('g1', 'Live/1975–85', '1986')]}, exact=False)
         self.assertEqual((yes.method, yes.decision), ('toc', 'yes'))
         other = py.from_disc_lookup(album(), {'releases': [release('g2', 'Tunnel of Love', '1987')]}, exact=False)
-        self.assertEqual(other.decision, 'check')
+        self.assertEqual(other.decision, 'check', 'same artist, other title: a human decides')
+        stranger = py.from_disc_lookup(album(), {'releases': [release('g3', 'Sea Story', '2021', artist='Someone')]},
+                                       exact=False)
+        self.assertIsNone(stranger, 'neither title nor artist: no evidence at all')
 
     def test_several_albums_on_one_disc_title_decides_or_human_checks(self):
         res = {'id': 'x', 'releases': [release('g1', 'Greatest Hits', '1995', secondary=['Compilation']),
