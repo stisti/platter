@@ -74,7 +74,7 @@ function resolveAlbumArtist(group) {
   return allShareBase ? shortest.artist : VARIOUS_ARTISTS;
 }
 
-const ADOPTED_FIELDS = ['album', 'albumArtist', 'artist', 'year', 'genres'];
+const ADOPTED_FIELDS = ['album', 'albumArtist', 'artist', 'year', 'originalYear', 'genres'];
 
 /**
  * A track whose album had to be guessed from its path (no tag, or a ripper's
@@ -110,11 +110,13 @@ function adoptFolderTags(records) {
     const oneArtist = peers.every((p) => keyOf(p.artist) === keyOf(first.artist));
     const albumArtist = mostCommon(peers.map((p) => p.albumArtist));
     const year = mostCommon(peers.map((p) => p.year));
+    const originalYear = mostCommon(peers.map((p) => p.originalYear));
     for (const t of weak) {
       t.album = first.album;
       t.albumArtist = albumArtist;
       if (t.guessed.includes('artist')) t.artist = oneArtist ? first.artist : albumArtist ?? t.artist;
       t.year ??= year;
+      t.originalYear ??= originalYear;
       if (!t.genres.length) t.genres = first.genres;
     }
   }
@@ -243,7 +245,12 @@ export function buildLibrary(trackRecords) {
         artist: t._aa,
         artistKey: keyOf(t._aa),
         tracks: [],
+        /** The year shown and sorted by: when the album first came out if known, else `editionYear`. */
         year: null,
+        /** Year of the edition the files come from (a remaster's DATE tag). */
+        editionYear: null,
+        /** First release, from ORIGINALDATE tags; null when the files do not say. */
+        originalYear: null,
         genres: [],
         duration: 0,
         added: 0,
@@ -258,7 +265,9 @@ export function buildLibrary(trackRecords) {
     duplicates += dropDuplicates(album);
     assignDiscs(album);
     album.tracks.sort(compareTracksInAlbum);
-    album.year = mostCommon(album.tracks.map((t) => t.year));
+    album.editionYear = mostCommon(album.tracks.map((t) => t.year));
+    album.originalYear = mostCommon(album.tracks.map((t) => t.originalYear));
+    album.year = album.originalYear ?? album.editionYear;
     album.discCount = new Set(album.tracks.map((t) => t._disc)).size;
     const genreNames = new Map();
     for (const t of album.tracks) {

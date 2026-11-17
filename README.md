@@ -147,6 +147,47 @@ What it does:
 
 Tests for the ripper: `npm run test:rip`.
 
+### Original release years for older rips
+
+An album's year in Platter is when it *first* came out, taken from the
+`ORIGINALDATE` tag. The ripper writes it; older rips and iTunes purchases
+usually only say when their own edition came out (a 2002 remaster of a 1984
+album says 2002, and Windows Media Player's years are often off by one).
+`scripts/rip/platter_years.py` adds the tag to those files, in two steps:
+
+```sh
+npm run years -- lookup              # look everything up; writes a plan, changes nothing
+# read and edit ~/.cache/platter-years/plan.tsv
+npm run years -- apply --dry-run     # what would be written
+npm run years -- apply --limit 3     # try it on three albums first
+npm run years -- apply               # write the rows marked "yes"
+```
+
+- **Lookup** groups the files into albums and finds each in MusicBrainz.
+  Windows Media Player saved the CD's table of contents in every file it
+  ripped (`WM/MCDI`), which gives the exact MusicBrainz disc ID: those rows
+  say `yes`. Albums without it (iTunes files) are searched by album artist
+  and title; those rows say `check`, with the candidates in the `note`
+  column, and are only written once you change them to `yes`. You can also
+  type a date yourself.
+- **Apply** adds `ORIGINALDATE` and `MUSICBRAINZ_RELEASEGROUPID` (iTunes
+  files: the same as `----:com.apple.iTunes:` items, as MusicBrainz Picard
+  writes them). Existing tags are never changed, and files that already have
+  `ORIGINALDATE` are skipped, so it can be stopped and run again.
+- **Safe rewriting.** Files ripped by Windows Media Player have no spare room
+  for tags, so each is rewritten whole: copied to the Chromebook's disk,
+  tagged there, checked to contain byte-identical audio, copied back next to
+  the original under a hidden name, checked again, and renamed over the
+  original. Unplugging the drive midway leaves the old file or the new one,
+  never a broken one. It reads every file twice and writes it once, so a
+  large collection takes a while.
+- **Backups.** The files' modification times change, so a backup that skips
+  existing files (`rclone copy --ignore-existing`) will not pick up the new
+  tags; run a plain `rclone copy` (or equivalent) once afterwards.
+- **What goes online:** each CD's table of contents and the names of the
+  albums that need a search, to MusicBrainz. Answers are cached in
+  `~/.cache/platter-years/`; `lookup --refresh` asks again.
+
 ## How the library is built
 
 - **Formats:** FLAC, M4A (AAC, as sold by iTunes) and MP3 tags are read in
@@ -175,6 +216,11 @@ Tests for the ripper: `npm run test:rip`.
   The FLAC copy wins, then the larger file. Nothing on the drive is touched.
 - **Artists** lists album artists. An artist's page also shows the
   compilations they appear on; guest-only artists are found through search.
+- **Years.** An album's year is when it first came out (`ORIGINALDATE`, or
+  `TDOR`/`TORY` in MP3s) when the files say so; otherwise the year of the
+  edition (`DATE`/`YEAR`). A reissue's album page shows both: *1984 · 2015
+  edition*. See *Original release years for older rips* for adding the tag
+  to files that lack it.
 - **Genres** come from the genre tag; a song can be in several
   (`Rock; Blues`).
 - **Covers** come from an image in the album folder (`cover.jpg`,

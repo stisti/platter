@@ -167,6 +167,13 @@ test('mp3: locates the attached picture', async () => {
   }
 });
 
+test('mp3: original release date frames (TDOR in v2.4, TORY in v2.3)', async () => {
+  const v4 = await parseMp3(reader(concat([buildId3v2({ version: 4, frames: [{ id: 'TDRC', text: '2015' }, { id: 'TDOR', text: '1975-08-25' }] }), mpegFrame()])));
+  assert.deepEqual([v4.tags.DATE, v4.tags.ORIGINALDATE], [['2015'], ['1975-08-25']]);
+  const v3 = await parseMp3(reader(concat([buildId3v2({ version: 3, frames: [{ id: 'TORY', text: '1975' }] }), mpegFrame()])));
+  assert.deepEqual(v3.tags.ORIGINALYEAR, ['1975']);
+});
+
 test('mp3: falls back to ID3v1', async () => {
   const bytes = concat([mpegFrame(), new Uint8Array(1000), buildId3v1({ title: 'Song', artist: 'Band', album: 'LP', year: '1988', track: 4, genre: 17 })]);
   const meta = await parseMp3(reader(bytes));
@@ -217,6 +224,13 @@ test('m4a: finds the metadata when it comes after the audio, without reading the
     assert.equal(meta.duration, 200);
     assert.ok(r.reads <= 3, `expected at most 3 reads, got ${r.reads}`);
   }
+});
+
+test('m4a: reads the original date from free-form items, and only that', async () => {
+  const meta = await parseMp4(reader(buildM4a({ tags: { DATE: '2010-11-29T08:00:00Z' }, freeform: { ORIGINALDATE: '1984-06-04', 'MusicBrainz Album Id': 'abc' } })));
+  assert.deepEqual(meta.tags, { DATE: ['2010-11-29T08:00:00Z'], ORIGINALDATE: ['1984-06-04'] });
+  const lower = await parseMp4(reader(buildM4a({ freeform: { originalyear: '1984' } })));
+  assert.deepEqual(lower.tags, { ORIGINALYEAR: ['1984'] });
 });
 
 test('m4a: numeric genres, and text genre taking precedence', async () => {
@@ -272,7 +286,7 @@ test('makeTrack: tags win, the path fills the gaps', () => {
     {
       path: 'x/y/09 - z.flac', size: 10, mtime: 5, v: undefined, fmt: 'flac',
       title: 'Real Title', artist: 'A, B', album: 'Real Album', albumArtist: 'AA', compilation: false,
-      trackNo: 2, discNo: 1, year: 1973, genres: ['Rock', 'Prog'], duration: 61.5, pic: { o: 100, l: 50, m: 'image/jpeg' }, guessed: [],
+      trackNo: 2, discNo: 1, year: 1973, originalYear: null, genres: ['Rock', 'Prog'], duration: 61.5, pic: { o: 100, l: 50, m: 'image/jpeg' }, guessed: [],
     },
   );
 
@@ -287,6 +301,15 @@ test('makeTrack: tags win, the path fills the gaps', () => {
   const loose = makeTrack('thing.ogg', {}, null);
   assert.equal(loose.artist, 'Unknown Artist');
   assert.equal(loose.album, 'Unknown Album');
+});
+
+test('makeTrack: year is the edition, originalYear the first release', () => {
+  const reissue = makeTrack('a/b/c.flac', {}, { tags: { DATE: ['2002'], ORIGINALDATE: ['1985-06-04'] } });
+  assert.deepEqual([reissue.year, reissue.originalYear], [2002, 1985]);
+  const wmp = makeTrack('a/b/c.flac', {}, { tags: { YEAR: ['1986'] } });
+  assert.deepEqual([wmp.year, wmp.originalYear], [1986, null]);
+  const onlyOriginal = makeTrack('a/b/c.flac', {}, { tags: { ORIGINALYEAR: ['1975'] } });
+  assert.deepEqual([onlyOriginal.year, onlyOriginal.originalYear], [1975, 1975]);
 });
 
 test('makeTrack: odd numbering does not produce nonsense', () => {

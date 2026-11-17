@@ -114,6 +114,20 @@ test('sorting: artists ignore a leading "The", albums go by artist then year', (
   assert.equal(lib.albums.get('björk\u001fpost').year, 1995);
 });
 
+test('an album\'s year is when it first came out, when the files say so', () => {
+  const lib = buildLibrary([
+    track('bs/live/1.flac', { ARTIST: 'Bruce Springsteen', ALBUM: 'Live 1975-85', YEAR: 1986, ORIGINALDATE: '1985', TITLE: 'a' }),
+    track('bs/live/2.flac', { ARTIST: 'Bruce Springsteen', ALBUM: 'Live 1975-85', YEAR: 1986, ORIGINALDATE: '1985', TITLE: 'b' }),
+    track('bs/usa/1.flac', { ARTIST: 'Bruce Springsteen', ALBUM: 'Born in the U.S.A.', DATE: 2015, ORIGINALDATE: '1984-06-04', TITLE: 'c' }),
+    track('bs/dd/1.flac', { ARTIST: 'Bruce Springsteen', ALBUM: 'Devils & Dust', YEAR: 2005, TITLE: 'd' }),
+  ]);
+  const usa = lib.albums.get('bruce springsteen\u001fborn in the u.s.a.');
+  assert.deepEqual([usa.year, usa.editionYear, usa.originalYear], [1984, 2015, 1984]);
+  const dd = lib.albums.get('bruce springsteen\u001fdevils & dust');
+  assert.deepEqual([dd.year, dd.editionYear, dd.originalYear], [2005, 2005, null]);
+  assert.deepEqual(titles(lib.artists.get('bruce springsteen').albums), ['Born in the U.S.A.', 'Live 1975-85', 'Devils & Dust'], 'a 2015 remaster still sorts as 1984');
+});
+
 test('genres: a track can be in several; a genre lists its albums once', () => {
   const lib = buildLibrary([
     track('m/1.flac', { ARTIST: 'Miles Davis', ALBUM: 'Bitches Brew', TITLE: 'a', GENRE: ['Jazz', 'Fusion'] }),
@@ -219,7 +233,7 @@ test('cover art: folder image first, then embedded art, then a lone image', () =
 const PLACEHOLDER = { TITLE: 'Raita 1', ARTIST: 'Tuntematon esittäjä', ALBUMARTIST: 'Tuntematon esittäjä', ALBUM: 'Tuntematon albumi (26.9.2024 0.59.52)', GENRE: 'Tuntematon tyylilaji', TRACKNUMBER: 1 };
 
 test('a track with stand-in tags joins the album its folder neighbours belong to', () => {
-  const tyler = (n, title) => track(`Bonnie Tyler/Super Hits/${String(n).padStart(2, '0')} ${title}.flac`, { TITLE: title, ARTIST: 'Bonnie Tyler', ALBUMARTIST: 'Bonnie Tyler', ALBUM: 'Super Hits: The Best', YEAR: 1999, GENRE: 'Rock', TRACKNUMBER: n });
+  const tyler = (n, title) => track(`Bonnie Tyler/Super Hits/${String(n).padStart(2, '0')} ${title}.flac`, { TITLE: title, ARTIST: 'Bonnie Tyler', ALBUMARTIST: 'Bonnie Tyler', ALBUM: 'Super Hits: The Best', YEAR: 1999, ORIGINALDATE: '1995', GENRE: 'Rock', TRACKNUMBER: n });
   const records = [
     track('Bonnie Tyler/Super Hits/01 Total Eclipse Of The Heart.flac', PLACEHOLDER),
     tyler(2, 'Have You Ever Seen The Rain?'),
@@ -230,13 +244,13 @@ test('a track with stand-in tags joins the album its folder neighbours belong to
   const [album] = lib.albums.values();
   assert.equal(album.title, 'Super Hits: The Best', 'the tagged name, not the folder name');
   assert.deepEqual(titles(album.tracks), ['Total Eclipse Of The Heart', 'Have You Ever Seen The Rain?', 'Ravishing']);
-  assert.deepEqual([album.tracks[0].artist, album.tracks[0].year, album.tracks[0].genres], ['Bonnie Tyler', 1999, ['Rock']]);
+  assert.deepEqual([album.tracks[0].artist, album.tracks[0].year, album.tracks[0].originalYear, album.tracks[0].genres], ['Bonnie Tyler', 1999, 1995, ['Rock']]);
   assert.deepEqual(titles(lib.sortedArtists), ['Bonnie Tyler']);
   assert.deepEqual(titles(lib.sortedGenres), ['Rock']);
 
   // What gets stored is what the file says; adopting is redone on every build, with the same result.
   const stored = toRecord(album.tracks[0]);
-  assert.deepEqual([stored.album, stored.albumArtist, stored.year, stored.genres], ['Super Hits', null, null, []]);
+  assert.deepEqual([stored.album, stored.albumArtist, stored.year, stored.originalYear, stored.genres], ['Super Hits', null, null, null, []]);
   const again = buildLibrary([...lib.tracks.values()]);
   assert.deepEqual(titles([...again.albums.values()][0].tracks), titles(album.tracks));
   // ...and it follows the neighbours if they are retagged.

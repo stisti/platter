@@ -173,6 +173,7 @@ const ILST_TEXT = { TITLE: '\u00a9nam', ARTIST: '\u00a9ART', ALBUMARTIST: 'aART'
  * Builds an M4A file the way iTunes lays it out.
  * @param {object} o
  * @param {Record<string, string>} [o.tags] TITLE, ARTIST, ALBUMARTIST, ALBUM, GENRE, DATE
+ * @param {Record<string, string>} [o.freeform] free-form iTunes items ("----"), by name, e.g. ORIGINALDATE
  * @param {[number, number]} [o.track] track number and total
  * @param {[number, number]} [o.disc]
  * @param {number} [o.genreId] numeric ("gnre") genre: ID3v1 index + 1
@@ -182,7 +183,7 @@ const ILST_TEXT = { TITLE: '\u00a9nam', ARTIST: '\u00a9ART', ALBUMARTIST: 'aART'
  * @param {number} [o.audioBytes] size of the audio data
  * @param {boolean} [o.wideAudio] give the audio box a 64-bit size field
  */
-export function buildM4a({ tags = {}, track = null, disc = null, genreId = null, compilation = false, cover = null, codec = 'mp4a', duration = 200, moovLast = false, audioBytes = 256, wideAudio = false } = {}) {
+export function buildM4a({ tags = {}, freeform = {}, track = null, disc = null, genreId = null, compilation = false, cover = null, codec = 'mp4a', duration = 200, moovLast = false, audioBytes = 256, wideAudio = false } = {}) {
   const data = (kind, payload) => box('data', u32be(kind), u32be(0), payload);
   const items = [];
   for (const [key, value] of Object.entries(tags)) items.push(box(ILST_TEXT[key], data(1, enc.encode(value))));
@@ -191,6 +192,9 @@ export function buildM4a({ tags = {}, track = null, disc = null, genreId = null,
   if (genreId !== null) items.push(box('gnre', data(0, new Uint8Array([genreId >> 8, genreId & 255]))));
   if (compilation) items.push(box('cpil', data(21, new Uint8Array([1]))));
   items.push(box('----', box('mean', u32be(0), enc.encode('com.apple.iTunes')), box('name', u32be(0), enc.encode('iTunNORM')), data(1, enc.encode(' 00000A2B'))));
+  for (const [name, value] of Object.entries(freeform)) {
+    items.push(box('----', box('mean', u32be(0), enc.encode('com.apple.iTunes')), box('name', u32be(0), enc.encode(name)), data(1, enc.encode(value))));
+  }
   if (cover) items.push(box('covr', data(cover.png ? 14 : 13, cover.data)));
 
   const timescale = 44100;
