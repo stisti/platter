@@ -9,11 +9,14 @@ import { CoverStore } from './covers.js';
 import { scanLibrary, ScanInterrupted } from './scanner.js';
 import { readTrack } from './tags.js';
 import { buildLibrary, emptyLibrary, keyOf, toRecord } from './library.js';
+import { libraryRows } from './sqlrows.js';
+import { loadSqlite, LibraryDatabase } from './sqldb.js';
 import { h, icon, iconButton, toast, openMenu, plural, promptDialog, playlistDialog } from './ui/dom.js';
 import {
   albumsView, albumView, artistsView, artistView, genresView, genreView, songsView,
   playlistsView, playlistView, searchView, welcomeView, refreshCovers,
 } from './ui/views.js';
+import { queryView } from './ui/query.js';
 import { mountPlayerBar, mountQueuePanel } from './ui/playerbar.js';
 import { VERSION } from './version.js';
 import { watchForUpdates } from './update.js';
@@ -33,6 +36,7 @@ const ROUTES = {
   playlists: playlistsView,
   playlist: playlistView,
   search: searchView,
+  query: queryView,
 };
 
 function loadPrefs() {
@@ -55,6 +59,8 @@ const app = {
   player: null,
   prefs: loadPrefs(),
   scan: { active: false, progress: null, controller: null },
+  /** The SQL copy of the library (see sqlDatabase()); `changes` counts edits that make it stale. */
+  sql: { ready: null, filled: null, changes: 0, setup: '', setupDraft: null, setupError: null, saved: [] },
   scroller: $('view'),
   _disposers: [],
 
@@ -79,6 +85,61 @@ const app = {
 
   rerender(options = { keepScroll: true }) {
     render(options);
+  },
+
+  // ---------------------------------------------------------------- SQL
+
+  /**
+   * The library as an SQLite database, for the Query page. SQLite is started
+   * on first use, and the tables are refilled only when something changed
+   * since the last fill: the library, a playlist, the covers, the setup SQL.
+   */
+  async sqlDatabase() {
+    const { sql } = this;
+    sql.ready ??= loadSqlite().then((sqlite3) => new LibraryDatabase(sqlite3));
+    let db;
+    try {
+      db = await sql.ready;
+    } catch (err) {
+      sql.ready = null; // try again next time (it may have failed offline)
+      throw err;
+    }
+    const stamp = `${sql.changes}`;
+    if (sql.filled?.lib !== this.lib || sql.filled.stamp !== stamp) {
+      const rows = libraryRows(this.lib, { playlists: this.playlists.list, hasCover: (key) => this.covers.has(key) });
+      sql.setupError = db.fill(rows, { setup: sql.setup });
+      sql.filled = { lib: this.lib, stamp };
+    }
+    return db;
+  },
+
+  /** The error from the owner's setup SQL at the last fill, if it failed. */
+  sqlSetupError() {
+    return this.sql.setupError;
+  },
+
+  /** Saves a query under a name (replacing one of the same name). Kept in IndexedDB `kv`. */
+  async saveQuery(name, sql) {
+    const saved = this.sql.saved.filter((q) => q.name !== name);
+    saved.push({ name, sql });
+    saved.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true }));
+    this.sql.saved = saved;
+    await db.put('kv', saved, 'savedQueries');
+  },
+
+  async deleteQuery(name) {
+    this.sql.saved = this.sql.saved.filter((q) => q.name !== name);
+    await db.put('kv', this.sql.saved, 'savedQueries');
+  },
+
+  /**
+   * The owner's setup SQL: run after every refill of the tables, for genre
+   * families of their own, views, and the like.
+   */
+  async setSqlSetup(sql) {
+    this.sql.setup = sql;
+    this.sql.changes++;
+    await db.put('kv', sql, 'sqlSetup');
   },
 
   // ----------------------------------------------------------- playback
@@ -455,6 +516,7 @@ function buildSidebar() {
       navLink('albums', 'Albums', 'album'),
       navLink('genres', 'Genres', 'genre'),
       navLink('songs', 'Songs', 'note'),
+      navLink('query', 'Query', 'code'),
     ),
     h(
       'div',
@@ -658,6 +720,17 @@ function savePosition() {
   }
 }
 
+/** Saved queries and setup SQL for the Query page. Missing or unreadable: start without them. */
+async function loadSqlSettings() {
+  try {
+    const [saved, setup] = await Promise.all([db.get('kv', 'savedQueries'), db.get('kv', 'sqlSetup')]);
+    app.sql.saved = Array.isArray(saved) ? saved.filter((q) => q && typeof q.name === 'string' && typeof q.sql === 'string') : [];
+    app.sql.setup = typeof setup === 'string' ? setup : '';
+  } catch {
+    // the Query page works without them
+  }
+}
+
 async function restoreSession() {
   let queue = null;
   try {
@@ -745,17 +818,21 @@ async function start() {
   wireKeyboard();
 
   app.playlists.addEventListener('change', () => {
+    app.sql.changes++;
     refreshPlaylistLinks();
     const { name } = parseRoute();
     if (name === 'playlist' || name === 'playlists') render({ keepScroll: true });
   });
-  app.covers.addEventListener('change', () => refreshCovers(app));
+  app.covers.addEventListener('change', () => {
+    app.sql.changes++;
+    refreshCovers(app);
+  });
   window.addEventListener('hashchange', () => render());
 
   // The saved library shows immediately, whether or not the drive is there.
   let tracks = [];
   try {
-    [tracks] = await Promise.all([db.getAll('tracks'), app.covers.init(), app.playlists.init()]);
+    [tracks] = await Promise.all([db.getAll('tracks'), app.covers.init(), app.playlists.init(), loadSqlSettings()]);
   } catch (err) {
     console.error(err);
     toast('Your saved library could not be opened. Scanning the drive will rebuild it.', { kind: 'error', duration: 8000 });

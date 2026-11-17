@@ -761,6 +761,11 @@ test('installed app keeps working when its server is not running', { skip }, asy
     await page.locator('.card', { hasText: 'Animals' }).locator('.card-play').click();
     await waitForState(page, 'playing');
 
+    // SQLite (never used before going offline) comes from the saved copy too.
+    await page.locator('.nav-link', { hasText: 'Query' }).click();
+    await runQuery(page, 'SELECT count(*) AS n FROM tracks');
+    await expectTexts(page, '.query-table tbody td', [String(SAMPLE_TRACKS)]);
+
     const unexpected = app.problems.filter((p) => !/ERR_CONNECTION_REFUSED|Failed to load resource|Failed to fetch/i.test(p));
     assert.deepEqual(unexpected, []);
   } finally {
@@ -828,5 +833,158 @@ test('layout holds at phone width and in the light theme', { skip }, async () =>
     assert.ok(await bar(page).locator('.pb-title').isVisible());
 
     assert.equal(await page.evaluate(() => getComputedStyle(document.body).backgroundColor), 'rgb(246, 245, 241)');
+
+    // The Query page fits too, results table included (it scrolls inside its own box).
+    await page.goto(`${app.url}#/query`);
+    await runQuery(page, 'SELECT title, artist, genres, format, size, mtime, path AS file FROM tracks');
+    await page.waitForSelector('.query-table');
+    const queryOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    assert.ok(queryOverflow <= 0, `query page is ${queryOverflow}px wider than the window`);
   }, { viewport: { width: 400, height: 760 }, colorScheme: 'light' });
+});
+
+// ------------------------------------------------------------------ queries
+
+/** Types SQL into the Query page and runs it with Ctrl+Enter. */
+async function runQuery(page, sql) {
+  const editor = page.getByRole('textbox', { name: 'SQL query' });
+  await editor.fill(sql);
+  await editor.press('Control+Enter');
+}
+const resultFacts = (page) => page.locator('.query-result-bar [role=status]');
+
+test('query: SQLite starts, and results are songs to play, albums to open, or a table', { skip }, async () => {
+  await withApp(async (app) => {
+    const { page } = app;
+    assert.match(await page.evaluate(async () => (await window.platter.sqlDatabase()).run('SELECT sqlite_version()').rows[0][0]), /^3\.\d+\.\d+$/);
+
+    await page.locator('.nav-link', { hasText: 'Query' }).click();
+    await page.waitForSelector('.query-page');
+    // Nothing runs until asked. The example query it starts with (80s rock)
+    // finds nothing in the sample library, but runs.
+    await page.waitForSelector('.query-results .empty');
+    await page.getByRole('button', { name: 'Run', exact: true }).click();
+    await eventually(() => resultFacts(page).textContent(), (text) => assert.match(text, /^0 songs/));
+    await expectTexts(page, '.query-schema summary', ['tracks', 'albums', 'artists', 'genres', 'track_genres', 'album_genres', 'genre_family', 'playlists', 'playlist_tracks', 'songs view', 'track_families view', 'album_families view']);
+
+    // 70s rock: "Progressive Rock" is in the rock family.
+    await runQuery(page, `SELECT s.* FROM songs s JOIN track_families f USING (path)
+      WHERE f.family = 'rock' AND s.released BETWEEN 1970 AND 1979 ORDER BY s.track_no`);
+    await expectTexts(page, '.query-results .track-title', ['Pigs on the Wing 1', 'Dogs', 'Pigs (Three Different Ones)']);
+    assert.match(await resultFacts(page).textContent(), /^3 songs · under a minute · (<1|\d+) ms$/);
+    await page.locator('.query-results').getByRole('button', { name: 'Shuffle', exact: true }).click();
+    await waitForState(page, 'playing');
+    assert.equal((await playerState(page)).length, 3);
+    await page.locator('.query-results .track', { hasText: 'Dogs' }).click();
+    await waitForTitle(page, 'Dogs');
+
+    // The same result as a table, and back.
+    await page.locator('.segmented').getByRole('button', { name: 'Table' }).click();
+    await expectCount(page, '.query-table tbody tr', 3);
+    await page.locator('.segmented').getByRole('button', { name: 'Songs' }).click();
+    await expectCount(page, '.query-results .track', 3);
+
+    // An album_key column makes a list of albums.
+    await runQuery(page, "SELECT * FROM albums WHERE artist_key = 'pink floyd' ORDER BY COALESCE(original_year, year) LIMIT 1");
+    await expectTexts(page, '.query-results .card-title', ['Animals']);
+    await page.locator('.query-results .card', { hasText: 'Animals' }).click();
+    await page.waitForSelector('.hero h1');
+    assert.equal(await page.locator('.hero h1').textContent(), 'Animals');
+    await page.goBack();
+    await expectTexts(page, '.query-results .card-title', ['Animals'], 'the query runs again on the way back');
+
+    // Anything else is a table.
+    await runQuery(page, 'SELECT family, count(*) AS songs FROM track_families GROUP BY family ORDER BY songs DESC, family LIMIT 3');
+    await expectTexts(page, '.query-table th', ['family', 'songs']);
+    assert.deepEqual(await page.locator('.query-table tbody tr').allInnerTexts(), ['pop\t5', 'rock\t5', 'progressive\t3']);
+
+    // Mistakes are shown on the page (not logged as errors, which withApp would catch).
+    await runQuery(page, 'SELECT * FROM nope');
+    await expectTexts(page, '.query-error', ['no such table: nope']);
+
+    // The SQL and the last query survive a reload.
+    await reloadApp(app);
+    await expectTexts(page, '.query-error', ['no such table: nope']);
+    assert.equal(await page.getByRole('textbox', { name: 'SQL query' }).inputValue(), 'SELECT * FROM nope');
+  });
+});
+
+test('query: a song list can be saved as a playlist, and playlists can be queried', { skip }, async () => {
+  await withApp(async (app) => {
+    const { page } = app;
+    await page.goto(`${app.url}#/query`);
+    await runQuery(page, "SELECT path FROM tracks WHERE genres LIKE '%jazz%' ORDER BY track_no");
+    await expectTexts(page, '.query-results .track-title', ['So What', 'Freddie Freeloader']);
+    await page.locator('.query-results').getByRole('button', { name: 'Save as playlist' }).click();
+    await page.locator('dialog .text-input').fill('Jazz from SQL');
+    await page.locator('dialog').getByRole('button', { name: 'Create' }).click();
+    await page.waitForSelector('.hero h1');
+    assert.equal(await page.locator('.hero h1').textContent(), 'Jazz from SQL');
+    await expectTexts(page, '.tracks .track-title', ['So What', 'Freddie Freeloader']);
+
+    // The new playlist is in the tables at once.
+    await page.goto(`${app.url}#/query`);
+    await runQuery(page, 'SELECT p.name, count(*) AS n FROM playlists p JOIN playlist_tracks pt ON pt.playlist_id = p.id GROUP BY p.id');
+    assert.deepEqual(await page.locator('.query-table tbody tr').allInnerTexts(), ['Jazz from SQL\t2']);
+  });
+});
+
+test('query: works with the drive unplugged, and follows the library after a rescan', { skip }, async () => {
+  await withApp(async (app) => {
+    const { page } = app;
+    await page.goto(`${app.url}#/query`);
+    await unplugDrive(page);
+    await page.waitForFunction(() => window.platter.source.state === 'disconnected', null, { timeout: 20000 });
+    await runQuery(page, "SELECT path FROM tracks WHERE artist_key = 'miles davis'");
+    await expectCount(page, '.query-results .track', 2);
+
+    // Back with one more Miles Davis song: the same query, run again by the page, finds it.
+    const extra = buildFlac({ tags: { TITLE: 'Blue in Green', ARTIST: 'Miles Davis', ALBUM: 'Kind of Blue', TRACKNUMBER: '3', DATE: '1959', GENRE: 'Jazz' }, playable: true });
+    await replugDrive(page, { ...app.files, 'Miles Davis/Kind of Blue/03 Blue in Green.flac': extra });
+    await waitForLibrary(page, SAMPLE_TRACKS + 1);
+    await expectCount(page, '.query-results .track', 3);
+  });
+});
+
+test('query: saved queries, and setup SQL that adds genre families of the owner\'s own', { skip }, async () => {
+  await withApp(async (app) => {
+    const { page } = app;
+    await page.goto(`${app.url}#/query`);
+    const chill = "SELECT s.* FROM songs s JOIN track_families f USING (path) WHERE f.family = 'chill' ORDER BY s.title";
+
+    // Save, and the query is there after a restart: one click runs it.
+    await runQuery(page, chill);
+    await eventually(() => resultFacts(page).textContent(), (text) => assert.match(text, /^0 songs/));
+    await page.getByRole('button', { name: 'Save…' }).click();
+    await page.locator('dialog .text-input').fill('Chill');
+    await page.locator('dialog').getByRole('button', { name: 'Save' }).click();
+    await expectTexts(page, '.query-chip .link-btn', ['Chill']);
+    await reloadApp(app);
+    await runQuery(page, 'SELECT 1');
+    await page.locator('.query-chip').getByRole('button', { name: 'Chill', exact: true }).click();
+    assert.equal(await page.getByRole('textbox', { name: 'SQL query' }).inputValue(), chill);
+    await eventually(() => resultFacts(page).textContent(), (text) => assert.match(text, /^0 songs/));
+
+    // Setup SQL puts Jazz into a "chill" family; the saved query now finds it.
+    await page.locator('.query-setup summary').click();
+    await page.getByRole('textbox', { name: 'Setup SQL' }).fill("INSERT INTO genre_family VALUES ('jazz', 'chill');");
+    await page.getByRole('button', { name: 'Save and apply' }).click();
+    await expectTexts(page, '.query-results .track-title', ['Freddie Freeloader', 'So What']);
+    await reloadApp(app);
+    await expectTexts(page, '.query-results .track-title', ['Freddie Freeloader', 'So What'], 'setup SQL is kept, and applied on the next start');
+
+    // Broken setup SQL says so, and the tables still work.
+    await page.locator('.query-setup summary').click();
+    await page.getByRole('textbox', { name: 'Setup SQL' }).fill('INSERT INTO nowhere VALUES (1);');
+    await page.getByRole('button', { name: 'Save and apply' }).click();
+    await expectTexts(page, '.query-setup .query-error', ['Setup SQL failed: no such table: nowhere']);
+    await eventually(() => resultFacts(page).textContent(), (text) => assert.match(text, /^0 songs/));
+
+    // Deleting a saved query asks first.
+    await page.locator('.query-chip').getByRole('button', { name: 'Delete “Chill”' }).click();
+    await page.locator('dialog').getByRole('button', { name: 'Delete' }).click();
+    await expectCount(page, '.query-chip', 0);
+    await reloadApp(app);
+    await expectCount(page, '.query-chip', 0);
+  });
 });

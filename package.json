@@ -1,6 +1,6 @@
 {
   "name": "platter",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "A music player web app for the music on a (removable) drive. Built for ChromeOS.",
   "private": true,
   "license": "MIT",

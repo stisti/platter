@@ -53,6 +53,9 @@ test('the server serves the app, with safe headers, and nothing outside it', asy
     assert.match(js.headers.get('content-type'), /text\/javascript/);
     const manifest = await fetch(`${base}/manifest.webmanifest`);
     assert.match(manifest.headers.get('content-type'), /application\/manifest\+json/);
+    // WebAssembly.instantiateStreaming insists on this type (GitHub Pages sends it too).
+    const wasm = await fetch(`${base}/vendor/sqlite/sqlite3.wasm`);
+    assert.equal(wasm.headers.get('content-type'), 'application/wasm');
 
     assert.equal((await fetch(`${base}/nope.js`)).status, 404);
     assert.equal((await fetch(`${base}/js`)).status, 404);

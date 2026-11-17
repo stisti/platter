@@ -23,6 +23,7 @@ const TYPES = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
+  '.wasm': 'application/wasm',
 };
 
 export const APP_ROOT = resolve(fileURLToPath(new URL('./app', import.meta.url)));

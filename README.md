@@ -83,6 +83,90 @@ Platter looks for changes on the drive each time it starts with the drive
 connected and each time the drive is plugged in. To do it by hand: **⋮** next
 to the drive status at the bottom of the sidebar → *Scan for new music*.
 
+## Queries
+
+**Query** in the sidebar runs SQL against the library: questions the other
+views cannot answer, such as "80s rock" or "the first album of each artist".
+Type SQL and press **Ctrl+Enter** (or **Run**). *Examples…* has a few to start
+from; **Save…** keeps a query under a name, and a click on its name runs it
+again.
+
+How a result is shown depends on its columns:
+
+- a **`path`** column: a list of **songs**, with *Play*, *Shuffle*, *Save as
+  playlist* and the usual song menus;
+- an **`album_key`** column (and no `path`): **albums**, as on the Albums page;
+- anything else: a **table** (the first 1,000 rows of it).
+
+*Songs* / *Albums* / *Table* above the result switches between the list and
+the table. The page runs its query again whenever it is opened, so the result
+follows the library through rescans. Queries work with the drive unplugged
+(playing the result still needs the drive).
+
+The database is SQLite, rebuilt in memory from what the app shows: album
+artists as resolved, discs merged, duplicate copies left out. Nothing written
+to it is kept, and nothing in it changes the music or the library.
+
+| Table | One row per | Columns |
+| --- | --- | --- |
+| `tracks` | song | `path`, `title`, `artist`, `artist_key`, `album_key`, `disc_no`, `track_no`, `year`, `original_year`, `genres`, `duration` (seconds), `format`, `size`, `mtime` (ms since 1970) |
+| `albums` | album | `album_key`, `title`, `artist`, `artist_key`, `year`, `edition_year`, `original_year`, `genres`, `track_count`, `disc_count`, `duration`, `added`, `has_cover` |
+| `artists` | artist | `artist_key`, `name`, `album_count` (0 for guests on compilations), `track_count` |
+| `genres` | genre | `genre_key`, `name` |
+| `track_genres`, `album_genres` | genre of a song / album | `path` or `album_key`, `genre`, `genre_key` |
+| `genre_family` | genre in a family | `genre_key`, `family` |
+| `playlists`, `playlist_tracks` | playlist / entry | `id`, `name`; `playlist_id`, `position`, `path` |
+
+Views: **`songs`** is `tracks` joined with its album (adds `album`,
+`album_artist`, `album_artist_key`, and `released`: the original year when
+known, else the year); **`track_families`** (`path`, `family`) and
+**`album_families`** (`album_key`, `family`) give the genre families. The
+panel next to the editor lists every table and column; clicking a name types
+it into the query.
+
+- **Keys** (`album_key`, `artist_key`, `genre_key`) are names in lower case
+  with spaces tidied: `artist_key = 'bruce springsteen'`. They have the same
+  name in every table, so joins can say `USING (album_key)`.
+- **Genre families** group messy genre tags: *Classic Rock*, *Metal & Hard
+  Rock* and *New Wave* are all in the `rock` family, *Soundtrackit* in
+  `soundtrack`. Every genre is also in a family of its own name. The mapping
+  is in `app/js/genres.js`; `node scripts/scan-dir.mjs /path/to/music --genres`
+  shows how a collection's genres are mapped.
+- **Years:** `year` is what the file says (a 2015 remaster says 2015);
+  `original_year` is the first release, when the files carry an
+  `ORIGINALDATE` tag.
+- SQLite sorts text by its bytes (`Z` before `a`); add `COLLATE NOCASE` to
+  sort as people do.
+- Several statements may be run at once; the result is that of the first
+  one that returns columns. A result stops at 100,000 rows.
+
+```sql
+-- 80s rock
+SELECT s.* FROM songs s JOIN track_families f USING (path)
+WHERE f.family = 'rock' AND s.released BETWEEN 1980 AND 1989
+ORDER BY s.album_artist COLLATE NOCASE, s.released, s.disc_no, s.track_no;
+
+-- The first album of Bruce Springsteen in the library
+SELECT * FROM albums WHERE artist_key = 'bruce springsteen'
+ORDER BY COALESCE(original_year, year) LIMIT 1;
+
+-- Hours of music per decade
+SELECT released / 10 * 10 AS decade, round(sum(duration) / 3600, 1) AS hours
+FROM songs WHERE released IS NOT NULL GROUP BY decade;
+```
+
+**Setup SQL** (under the editor) is SQL of your own that runs every time the
+tables are filled, before any query: your own genre families, views you use
+often, corrections. For example:
+
+```sql
+INSERT INTO genre_family VALUES ('synth pop', 'rock');
+CREATE VIEW long_songs AS SELECT * FROM songs WHERE duration > 600;
+```
+
+If a statement fails, the error is shown there; the statements before it have
+run, the rest are skipped, and queries still work.
+
 ## Ripping CDs
 
 Chrome cannot read audio CDs, so ripping happens in the Chromebook's Linux
@@ -241,8 +325,9 @@ app.)
 
 ## Development
 
-No build step and no runtime dependencies: `app/` is plain HTML, CSS and
-JavaScript modules, served as-is.
+No build step: `app/` is plain HTML, CSS and JavaScript modules, served
+as-is. The one runtime dependency, SQLite for the Query page, is vendored
+(see below).
 
 ```
 app/
@@ -257,8 +342,11 @@ app/
     source.js                   the folder handle: permission and connected/disconnected state
     queue.js, player.js         play queue; audio playback with next-track preloading
     playlists.js, db.js         playlists; IndexedDB storage
-    main.js, ui/                wiring, views, player bar
+    genres.js, sqlrows.js       genre families; the library as SQL tables (schema and rows)
+    sqldb.js                    SQLite in memory: loading it, filling it, running queries
+    main.js, ui/                wiring, views, player bar, the Query page (ui/query.js)
     version.js, update.js       the running version; noticing a newer published one
+  vendor/sqlite/                SQLite compiled to WebAssembly (@sqlite.org/sqlite-wasm)
 server.mjs                      static file server for app/
 scripts/                        icons, service installer, command-line scanner
 test/                           unit tests; test/e2e/ browser tests
@@ -288,6 +376,23 @@ including the way it fails when the folder disappears.
 
 When adding or removing a file under `app/`, update the `ASSETS` list in
 `app/sw.js` (a test checks this).
+
+**SQLite** is the official WebAssembly build, copied from the npm package
+`@sqlite.org/sqlite-wasm` (currently 3.54.1-build1): its `dist/index.mjs` as
+`app/vendor/sqlite/sqlite3.mjs`, and `dist/sqlite3.wasm`. Nothing else from
+the package is needed (the OPFS and worker files are for databases stored on
+disk). It is only downloaded when the Query page is first used. To update it:
+
+```sh
+npm pack @sqlite.org/sqlite-wasm@<version>   # in a scratch folder; check the
+tar xzf sqlite.org-sqlite-wasm-*.tgz         # tarball against `npm view … dist.integrity`
+cp package/dist/index.mjs  <repo>/app/vendor/sqlite/sqlite3.mjs
+cp package/dist/sqlite3.wasm <repo>/app/vendor/sqlite/sqlite3.wasm
+```
+
+The unit tests run the same files in Node (`test/helpers/sqlite.mjs`).
+Compiling WebAssembly needs `'wasm-unsafe-eval'` in the page's Content
+Security Policy (`index.html`); it allows nothing else.
 
 ### CI and publishing
 
@@ -335,4 +440,6 @@ offer to reload.
 ## License
 
 [MIT](LICENSE). The interface icons are Material Design icon paths by Google,
-used under the Apache License 2.0.
+used under the Apache License 2.0. SQLite is in the public domain; its
+WebAssembly packaging (`app/vendor/sqlite/`) is from
+[sqlite-wasm](https://github.com/sqlite/sqlite-wasm), Apache License 2.0.

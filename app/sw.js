@@ -37,12 +37,19 @@ const ASSETS = [
   'js/queue.js',
   'js/scanner.js',
   'js/source.js',
+  'js/genres.js',
+  'js/sqldb.js',
+  'js/sqlrows.js',
   'js/tags.js',
   'js/ui/dom.js',
   'js/ui/playerbar.js',
+  'js/ui/query.js',
   'js/ui/views.js',
   'js/update.js',
   'js/version.js',
+  // SQLite for the Query page (vendored @sqlite.org/sqlite-wasm; loaded only when used)
+  'vendor/sqlite/sqlite3.mjs',
+  'vendor/sqlite/sqlite3.wasm',
 ];
 
 self.addEventListener('install', (event) => {
