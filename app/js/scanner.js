@@ -19,15 +19,20 @@ export class ScanInterrupted extends Error {
 
 const SKIPPED_DIRECTORIES = /^(\$RECYCLE\.BIN|System Volume Information|lost\+found|@eaDir)$/i;
 
+/** @import { TrackRecord } from './tags.js' */
+
 /**
  * @param {object} options
  * @param {FileSystemDirectoryHandle} options.root
- * @param {Map<string, object>} options.existing  path -> record from the previous scan
- * @param {(file: File, path: string) => Promise<object>} options.readTrack
+ * @param {Map<string, TrackRecord>} options.existing  path -> record from the previous scan
+ * @param {(file: File, path: string) => Promise<TrackRecord|null>} options.readTrack
+ *   null for a copy-protected file
  * @param {(progress: object) => void} [options.onProgress]
- * @param {(records: object[]) => Promise<void>} [options.onBatch]  new/changed records, as they are read
+ * @param {(records: TrackRecord[]) => Promise<void>} [options.onBatch]  new/changed records, as they are read
  * @param {() => Promise<boolean>} [options.isAlive]  is the drive still there?
  * @param {AbortSignal} [options.signal]
+ * @param {number} [options.concurrency]  files read at the same time
+ * @param {number} [options.batchSize]  records per onBatch call
  */
 export async function scanLibrary({
   root,
@@ -40,8 +45,9 @@ export async function scanLibrary({
   concurrency = 6,
   batchSize = 100,
 }) {
+  /** @type {{path: string, handle: FileSystemFileHandle}[]} */
   const files = [];
-  /** directory path -> image file names in it (cover art candidates) */
+  /** @type {Map<string, string[]>} directory path -> image file names in it (cover art candidates) */
   const images = new Map();
   let complete = true;
   let skipped = 0;
@@ -84,7 +90,9 @@ export async function scanLibrary({
   }
 
   // Phase 2: read tags of new and changed files, a few at a time.
+  /** @type {TrackRecord[]} */
   const tracks = [];
+  /** @type {TrackRecord[]} */
   const batch = [];
   let cursor = 0;
   let done = 0;
@@ -149,6 +157,7 @@ export async function scanLibrary({
   if (failure) throw failure;
 
   const seen = new Set(tracks.map((t) => t.path));
+  /** @type {string[]} */
   const removed = [];
   if (complete) {
     for (const path of existing.keys()) if (!seen.has(path)) removed.push(path);

@@ -10,6 +10,8 @@
 import { keyOf } from './library.js';
 import { familiesOf } from './genres.js';
 
+/** @import { Library } from './library.js' */
+
 /**
  * The tables and views. Recreated on every fill; documented for the owner in
  * README.md ("Queries"). Keys are the same strings the app uses everywhere
@@ -109,7 +111,7 @@ function uniqueGenres(names) {
  * Turns the built library into rows for every table: `{ tracks: [[...]], ... }`,
  * each row's values in `COLUMNS` order.
  *
- * @param {object} lib from buildLibrary()
+ * @param {Library} lib from buildLibrary()
  * @param {{ playlists?: Array<{id: string, name: string, tracks: string[]}>, hasCover?: (albumKey: string) => boolean }} [options]
  */
 export function libraryRows(lib, { playlists = [], hasCover = null } = {}) {

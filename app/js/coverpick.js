@@ -3,6 +3,8 @@
 
 import { dirOf } from './tags.js';
 
+/** @import { TrackRecord } from './tags.js' */
+
 const PREFERRED_NAME = /^(cover|folder|front|album|albumart|artwork)/i;
 const DISC_FOLDER = /(^|\/)(cd|disc|disk)[\s._-]*\d+$/i;
 
@@ -12,7 +14,7 @@ const DISC_FOLDER = /(^|\/)(cd|disc|disk)[\s._-]*\d+$/i;
  *   2. the picture embedded in one of the album's tracks
  *   3. the only image in the album's folder, whatever it is called
  *
- * @param {{tracks: object[]}} album
+ * @param {{tracks: TrackRecord[]}} album
  * @param {Map<string, string[]>} images directory path -> image file names
  * @returns {Array<{type: 'file', path: string} | {type: 'embedded', path: string, offset: number, length: number, mime: string}>}
  */

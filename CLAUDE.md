@@ -6,13 +6,14 @@ Platter is a music player PWA for a Chromebook: it reads music from a user-chose
 
 ## Commands
 
-No build step — `app/` is served as-is. The one runtime dependency, SQLite WASM for the Query page, is vendored in `app/vendor/sqlite/` (README "Development" says how to update it). Node >= 20; the only dev dependency is `playwright-core`.
+No build step — `app/` is served as-is. The one runtime dependency, SQLite WASM for the Query page, is vendored in `app/vendor/sqlite/` (README "Development" says how to update it). Node >= 20; the dev dependencies are `playwright-core` and `typescript` (a checker only: see "Type checking" below).
 
 ```sh
 npm start                     # dev server on http://localhost:7373 (PORT=… to change)
 npm test                      # unit tests: node --test test/*.test.mjs
 npm run test:e2e              # real app in headless Chromium, serial
-npm run test:all
+npm run typecheck             # tsc over the JSDoc types of the modules in tsconfig.json; emits nothing
+npm run test:all              # unit + typecheck + rip + e2e
 node --test test/library.test.mjs                        # one file
 node --test --test-name-pattern='various' test/*.test.mjs  # tests matching a name
 node scripts/scan-dir.mjs /path/to/music --albums        # how the library logic reads a real folder
@@ -44,6 +45,8 @@ Keep new library/tag logic in the pure modules so it stays testable in Node. Tes
 **The drive can vanish at any moment** — this is a core design constraint, not an edge case. A scan interrupted by the drive disappearing throws `ScanInterrupted` and must never remove tracks from the library; playback pauses and keeps its place; the library must stay browsable offline. Preserve these behaviours; the e2e suite tests them.
 
 **E2E harness** (`test/e2e/harness.mjs`) simulates the drive with a folder in the browser's origin-private file system (OPFS), which yields real `FileSystemDirectoryHandle`s; "unplugging" deletes that folder. It fails tests on any page error or `console.error`.
+
+**Type checking.** JavaScript with JSDoc types, checked by `tsc` (TypeScript 7, `strict` off) for the modules listed in `tsconfig.json` `include`: so far the pure ones. Shared types: `TrackRecord` in `tags.js`; `Track`, `Album`, `Artist`, `Genre`, `Library` in `library.js`; import them with `/** @import { Library } from './library.js' */`. When you change a record or library shape, update the typedef too. Never import the vendored SQLite by a literal path (see `SQLITE_MODULE` in `sqldb.js`): tsc would follow it and check that generated code. To bring a browser module under the check, add it to `include` and fix what tsc reports.
 
 **SQL queries** (`#/query`, `ui/query.js`). `app.sqlDatabase()` in `main.js` fills an in-memory SQLite from the *built* library (`libraryRows(lib)`), not from stored records, and refills only when `app.lib` is replaced or `app.sql.changes` is bumped (playlists, covers, setup SQL). Schema changes go in `SCHEMA` and `COLUMNS` in `sqlrows.js` together (`test/sqldb.test.mjs` checks they agree) and in README "Queries". The Query page treats a `path` column as songs and `album_key` as albums. SQL errors are shown inline as `QueryError`, never logged. Saved queries and setup SQL live in IndexedDB `kv` (`savedQueries`, `sqlSetup`).
 

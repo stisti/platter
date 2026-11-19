@@ -4,6 +4,62 @@
 
 import { dirOf } from './tags.js';
 
+/** @import { TrackRecord } from './tags.js' */
+
+/**
+ * A track in the built library: its stored record plus what buildLibrary
+ * derives. Derived fields start with `_` and are never stored (see toRecord):
+ *   _aa       the album artist, resolved when there is no tag
+ *   _albumKey Album.key
+ *   _disc     the disc it is on (guessed for an untagged multi-disc set)
+ *   _dup      a duplicate copy, which the lenses leave out
+ *   _hay      the text search matches against, made on first search
+ *   _orig     what the file said before taking album details from its folder
+ * @typedef {TrackRecord & {
+ *   _aa?: string,
+ *   _albumKey?: string,
+ *   _disc?: number,
+ *   _dup?: boolean,
+ *   _hay?: string,
+ *   _orig?: Partial<TrackRecord>,
+ * }} Track
+ */
+
+/**
+ * @typedef {object} Album
+ * @property {string} key  keyOf(artist) + SEP + keyOf(title)
+ * @property {string} title
+ * @property {string} artist
+ * @property {string} artistKey
+ * @property {Track[]} tracks  in disc and track order, duplicate copies left out
+ * @property {number|null} year  the year shown and sorted by: originalYear if known, else editionYear
+ * @property {number|null} editionYear  of the edition the files come from (a remaster's DATE tag)
+ * @property {number|null} originalYear  first release, from ORIGINALDATE tags
+ * @property {string[]} genres
+ * @property {number} duration  seconds
+ * @property {number} added  newest file's mtime
+ * @property {number} discCount
+ */
+
+/**
+ * @typedef {object} Artist
+ * @property {string} key
+ * @property {string} name
+ * @property {Album[]} albums  as album artist
+ * @property {Album[]} appearsOn  albums of others it has tracks on
+ * @property {Track[]} tracks
+ */
+
+/**
+ * @typedef {object} Genre
+ * @property {string} key
+ * @property {string} name
+ * @property {Album[]} albums
+ * @property {Track[]} tracks
+ */
+
+/** @typedef {ReturnType<typeof buildLibrary>} Library */
+
 export const VARIOUS_ARTISTS = 'Various Artists';
 
 const SEP = '\u001f';
@@ -127,7 +183,7 @@ const LOSSLESS = new Set(['flac', 'wav']);
 /** Of two copies of one song, which is the one to keep: lossless first, then the bigger file. */
 function compareCopies(a, b) {
   return (
-    LOSSLESS.has(b.fmt) - LOSSLESS.has(a.fmt) || (b.size ?? 0) - (a.size ?? 0) || collator.compare(a.path, b.path)
+    Number(LOSSLESS.has(b.fmt)) - Number(LOSSLESS.has(a.fmt)) || (b.size ?? 0) - (a.size ?? 0) || collator.compare(a.path, b.path)
   );
 }
 
@@ -205,11 +261,13 @@ function compareAlbumsChronologically(a, b) {
 }
 
 /**
- * @param {Iterable<object>} trackRecords records as produced by tags.js. Each gets two
- *   derived fields: `_albumKey` and `_aa` (the resolved album artist name).
+ * @param {Iterable<Track>} trackRecords records as produced by tags.js (or the tracks of a
+ *   library built before). Each gets the derived `_` fields of a Track.
  */
 export function buildLibrary(trackRecords) {
+  /** @type {Map<string, Track>} */
   const tracks = new Map();
+  /** @type {Map<string, Track[]>} */
   const untagged = new Map();
   if (!Array.isArray(trackRecords)) trackRecords = [...trackRecords];
   adoptFolderTags(trackRecords);
@@ -233,6 +291,7 @@ export function buildLibrary(trackRecords) {
   }
 
   // Albums
+  /** @type {Map<string, Album>} */
   const albums = new Map();
   for (const t of tracks.values()) {
     const key = keyOf(t._aa) + SEP + keyOf(t.album);
@@ -283,8 +342,11 @@ export function buildLibrary(trackRecords) {
   );
 
   // Artists and genres, visiting tracks in album order so their track lists come out ordered.
+  /** @type {Map<string, Artist>} */
   const artists = new Map();
+  /** @type {Map<string, Genre>} */
   const genres = new Map();
+  /** @type {(name: string) => Artist} */
   const artistFor = (name) => {
     const key = keyOf(name);
     let artist = artists.get(key);
@@ -342,6 +404,7 @@ export function buildLibrary(trackRecords) {
       .filter((a) => a.albums.length > 0)
       .sort((a, b) => collator.compare(sortName(a.name), sortName(b.name))),
     sortedGenres: [...genres.values()].sort((a, b) => collator.compare(a.name, b.name)),
+    /** @type {Track[]|null} */
     _sortedTracks: null,
     /** All tracks by title. Sorted on first use, since many sessions never open the Songs view. */
     get sortedTracks() {
@@ -361,9 +424,12 @@ export function emptyLibrary() {
 /**
  * The record as it should be stored: without derived fields, and with what
  * the file itself says rather than what was adopted from its neighbours.
+ *
+ * @param {Track} track
+ * @returns {TrackRecord}
  */
 export function toRecord(track) {
-  const record = {};
+  const record = /** @type {TrackRecord} */ ({});
   for (const key of Object.keys(track)) if (key[0] !== '_') record[key] = track[key];
   if (track._orig) Object.assign(record, track._orig);
   return record;
@@ -380,6 +446,10 @@ function rank(items, nameOf, firstTerm, limit) {
  * Every word of the query must appear somewhere in the item (in any field;
  * accents, case and punctuation ignored). Results whose name starts with the
  * query come first.
+ *
+ * @param {Library} lib
+ * @param {string} query
+ * @param {{limit?: number}} [options]  most results of each kind
  */
 export function searchLibrary(lib, query, { limit = 60 } = {}) {
   const terms = searchForm(query).split(' ').filter(Boolean);

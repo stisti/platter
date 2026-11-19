@@ -114,11 +114,40 @@ export function splitGenres(values) {
 }
 
 /**
+ * What is stored for one audio file (IndexedDB `tracks`, keyed by path).
+ * @typedef {object} TrackRecord
+ * @property {string} path  relative to the music folder: "Artist/Album/01 - Title.flac"
+ * @property {number} size  bytes; with `mtime` and `v`, tells a rescan whether to re-read the file
+ * @property {number} mtime  the file's lastModified (ms)
+ * @property {number} v  the TRACK_VERSION the record was made with
+ * @property {string} fmt  file extension, lower case
+ * @property {string} title
+ * @property {string} artist
+ * @property {string} album
+ * @property {string|null} albumArtist
+ * @property {boolean} compilation
+ * @property {number|null} trackNo
+ * @property {number|null} discNo
+ * @property {number|null} year  of the edition this file comes from
+ * @property {number|null} originalYear  when the album first came out, if the file says
+ * @property {string[]} genres
+ * @property {number|null} duration  seconds
+ * @property {{o: number, l: number, m: string}|null} pic  embedded picture: byte offset, length, MIME type
+ * @property {string[]} guessed  fields taken from the path for want of a usable tag
+ */
+
+/**
  * Builds a track record from already-parsed tags. Pure, so it is easy to test.
  *
  * `guessed` lists the fields ("title", "artist", "album") that had no usable
  * tag and were derived from the path instead; the library builder uses it to
  * let such a track take its album details from its neighbours in the folder.
+ *
+ * @param {string} path
+ * @param {{size?: number, mtime?: number}} [file]
+ * @param {{tags?: Record<string, string[]>, duration?: number|null,
+ *   picture?: {offset: number, length: number, mime: string}|null}|null} [parsed]  from a tag parser
+ * @returns {TrackRecord}
  */
 export function makeTrack(path, { size = 0, mtime = 0 } = {}, parsed = null) {
   const tags = parsed?.tags ?? {};
@@ -182,6 +211,10 @@ const PROTECTED_CODECS = new Set(['drms', 'drmi', 'p608']);
  * Reads tags from an audio File/Blob. A file whose tags cannot be parsed
  * still gets a usable record derived from its path. Returns null for a
  * copy-protected file, which could be listed but never played.
+ *
+ * @param {File} file
+ * @param {string} path
+ * @returns {Promise<TrackRecord|null>}
  */
 export async function readTrack(file, path) {
   const ext = extensionOf(path);

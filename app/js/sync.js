@@ -18,6 +18,11 @@
 import { scanLibrary, ScanInterrupted } from './scanner.js';
 import { buildLibrary, toRecord } from './library.js';
 
+/**
+ * @import { TrackRecord } from './tags.js'
+ * @import { Library } from './library.js'
+ */
+
 /** An automatic scan that would remove at least this many tracks, and over half the library, removes none. */
 const SUSPICIOUS_REMOVALS = 10;
 /** On a first scan, show what has been found so far at most this often (ms). */
@@ -26,8 +31,8 @@ const PREVIEW_EVERY = 2500;
 /**
  * Where track records are kept (IndexedDB in the app: `trackStore` in db.js).
  * @typedef {object} TrackStore
- * @property {() => Promise<object[]>} getAll
- * @property {(records: object[]) => Promise<void>} putMany
+ * @property {() => Promise<TrackRecord[]>} getAll
+ * @property {(records: TrackRecord[]) => Promise<void>} putMany
  * @property {(paths: string[]) => Promise<void>} deleteMany
  * @property {(info: {at: number, tracks: number}) => Promise<void>} setLastScan
  */
@@ -48,7 +53,10 @@ const PREVIEW_EVERY = 2500;
  * @property {number} skipped  files or folders that could not be read
  */
 
-/** The library as saved, for showing at startup whether or not the drive is there. */
+/**
+ * The library as saved, for showing at startup whether or not the drive is there.
+ * @param {TrackStore} store
+ */
 export async function loadLibrary(store) {
   return buildLibrary(await store.getAll());
 }
@@ -57,17 +65,18 @@ export async function loadLibrary(store) {
  * Brings the library up to date with the drive. Never rejects; what happened is in the outcome.
  *
  * @param {object} o
- * @param {object} o.lib  the library as it is now; the drive is compared against its tracks
+ * @param {Library} o.lib  the library as it is now; the drive is compared against its tracks
  * @param {FileSystemDirectoryHandle} o.root  the music folder
  * @param {TrackStore} o.store
- * @param {(file: File, path: string) => Promise<object|null>} o.readTrack
- * @param {(options: {lib: object, images: Map<string, string[]>, prune: boolean,
+ * @param {(file: File, path: string) => Promise<TrackRecord|null>} o.readTrack
+ *   null for a copy-protected file
+ * @param {(options: {lib: Library, images: Map<string, string[]>, prune: boolean,
  *   signal?: AbortSignal, onProgress: Function}) => Promise<void>} o.buildCovers
  *   makes missing cover thumbnails; with `prune`, also drops those of albums that are gone
  * @param {() => Promise<boolean>} [o.isAlive]  is the drive still there?
  * @param {boolean} [o.quiet]  an automatic scan, not one the user asked for: guarded against
  *   removing most of the library
- * @param {(lib: object, reason: 'preview'|'scanned'|'recovered') => void} [o.onLibrary]
+ * @param {(lib: Library, reason: 'preview'|'scanned'|'recovered') => void} [o.onLibrary]
  *   a library to show. preview: part of a first scan, so far; scanned: the scan's result,
  *   before covers are built; recovered: reloaded from the store after a failure.
  * @param {(progress: object) => void} [o.onProgress]
@@ -90,6 +99,7 @@ export async function syncLibrary({
   const wasEmpty = lib.tracks.size === 0;
   const fresh = [];
   let lastPreview = Date.now();
+  /** @type {SyncOutcome['during']} */
   let during = 'scan';
 
   try {
