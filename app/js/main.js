@@ -680,6 +680,7 @@ function wirePlayer() {
     // Formats whose length can't be read from tags: remember it once played.
     const { track, duration } = event.detail;
     track.duration = duration;
+    app.sql.changes++; // the track changed in place, so the SQL copy must refill
     db.put('tracks', toRecord(track)).catch(() => {});
   });
   player.addEventListener('error', (event) => {
