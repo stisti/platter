@@ -1,14 +1,14 @@
 // Application entry point: wires the library, the drive connection, the
 // player and the views together.
 
-import { db } from './db.js';
+import { db, trackStore } from './db.js';
 import { MusicSource } from './source.js';
 import { Player } from './player.js';
 import { Playlists } from './playlists.js';
 import { CoverStore } from './covers.js';
-import { scanLibrary, ScanInterrupted } from './scanner.js';
+import { loadLibrary, syncLibrary } from './sync.js';
 import { readTrack } from './tags.js';
-import { buildLibrary, emptyLibrary, keyOf, toRecord } from './library.js';
+import { emptyLibrary, keyOf, toRecord } from './library.js';
 import { libraryRows } from './sqlrows.js';
 import { loadSqlite, LibraryDatabase } from './sqldb.js';
 import { h, icon, iconButton, toast, openMenu, plural, promptDialog, playlistDialog } from './ui/dom.js';
@@ -277,7 +277,7 @@ const app = {
   },
 
   /**
-   * Brings the library up to date with the drive.
+   * Brings the library up to date with the drive (sync.js has the rules).
    * @param {{quiet?: boolean}} [options] quiet: no messages unless something changed
    */
   async rescan({ quiet = false } = {}) {
@@ -290,89 +290,28 @@ const app = {
     const controller = new AbortController();
     this.scan = { active: true, progress: { phase: 'walk', found: 0 }, controller };
     refreshChrome();
-    const wasEmpty = this.lib.tracks.size === 0;
-    if (wasEmpty) render();
-
-    // On a first scan, show albums as they are discovered instead of a long blank wait.
-    const fresh = [];
-    let lastPreview = Date.now();
-    const onProgress = (progress) => {
-      this.scan.progress = progress;
-      refreshScanStatus();
-    };
+    if (this.lib.tracks.size === 0) render();
 
     try {
-      const result = await scanLibrary({
+      const outcome = await syncLibrary({
+        lib: this.lib,
         root: this.source.root,
-        existing: this.lib.tracks,
+        store: trackStore,
         readTrack,
-        signal: controller.signal,
+        buildCovers: (options) => this.covers.build({ ...options, getFile: (path) => this.source.getFile(path) }),
         isAlive: async () => (await this.source.check()) === 'connected',
-        onProgress,
-        onBatch: async (records) => {
-          await db.putMany('tracks', records.map(toRecord));
-          if (!wasEmpty) return;
-          fresh.push(...records);
-          if (Date.now() - lastPreview > 2500) {
-            lastPreview = Date.now();
-            setLibrary(buildLibrary(fresh));
-          }
+        quiet,
+        signal: controller.signal,
+        onLibrary: (lib, reason) => {
+          setLibrary(lib);
+          if (reason === 'scanned') this.player.pruneQueue();
+        },
+        onProgress: (progress) => {
+          this.scan.progress = progress;
+          refreshScanStatus();
         },
       });
-      // An automatic scan must not quietly gut the library. If most of it seems
-      // to have vanished, the likelier story is the wrong drive or a half-ready
-      // one, not a spring clean - so keep everything and let the user decide.
-      const suspicious = quiet && result.removed.length >= 10 && result.removed.length * 2 > this.lib.tracks.size;
-      if (suspicious) {
-        for (const path of result.removed) result.tracks.push(this.lib.tracks.get(path));
-        result.removed = [];
-        result.complete = false; // also keeps the covers of the albums in question
-        toast('Most of your library was not found on the drive, so nothing was removed. If the music really is gone, use “Scan for new music” to update the library.', { kind: 'error', duration: 12000 });
-      }
-      if (result.removed.length) await db.deleteMany('tracks', result.removed);
-      // An unchanged library is left alone: no reason to redraw what the user is looking at.
-      if (result.added || result.updated || result.removed.length || wasEmpty) {
-        setLibrary(buildLibrary(result.tracks));
-        this.player.pruneQueue();
-      }
-
-      await this.covers.build({
-        lib: this.lib,
-        images: result.images,
-        getFile: (path) => this.source.getFile(path),
-        prune: result.complete,
-        signal: controller.signal,
-        onProgress,
-      });
-
-      await db.put('kv', { at: Date.now(), tracks: result.tracks.length }, 'lastScan');
-      const changes = [
-        result.added ? `${plural(result.added, 'song')} added` : null,
-        result.updated ? `${result.updated.toLocaleString()} updated` : null,
-        result.removed.length ? `${result.removed.length.toLocaleString()} removed` : null,
-      ].filter(Boolean);
-      if (changes.length) toast(`Library updated: ${changes.join(', ')}.`);
-      else if (!quiet) toast('Library is up to date.');
-      // Say once why some of the collection is absent, not on every scan.
-      if (result.protectedFiles && this.prefs.protectedNoted !== result.protectedFiles) {
-        this.setPref('protectedNoted', result.protectedFiles);
-        toast(`${plural(result.protectedFiles, 'copy-protected iTunes file')} (FairPlay DRM) can only be played by Apple’s apps and ${result.protectedFiles === 1 ? 'was' : 'were'} left out.`, { duration: 12000 });
-      }
-      if (result.skipped && !quiet) toast(`${plural(result.skipped, 'file or folder', 'files or folders')} could not be read and were skipped.`, { kind: 'error' });
-    } catch (err) {
-      // Whatever was read before the interruption is already saved; show it.
-      try {
-        setLibrary(buildLibrary(await db.getAll('tracks')));
-      } catch {
-        // keep the library we have
-      }
-      if (err instanceof ScanInterrupted) toast('The music drive was disconnected during the scan. Your library is unchanged; scan again when the drive is back.', { kind: 'error', duration: 8000 });
-      else if (err?.name === 'AbortError') toast('Scan stopped.');
-      else if (err?.name === 'SourceError') toast('The music drive went away while loading album art.', { kind: 'error' });
-      else {
-        console.error(err);
-        toast('The scan ran into a problem and stopped. Your library is unchanged.', { kind: 'error' });
-      }
+      reportSync(outcome, { quiet });
     } finally {
       this.scan = { active: false, progress: null, controller: null };
       refreshChrome();
@@ -466,6 +405,39 @@ function setLibrary(lib) {
   refreshChrome();
   ui.playerBar?.refresh();
   ui.queuePanel?.render();
+}
+
+/** Tells the user what a library sync did (see syncLibrary's outcome). */
+function reportSync(outcome, { quiet }) {
+  const { status, added, updated, removed, protectedFiles, skipped } = outcome;
+  if (outcome.suspicious) {
+    toast('Most of your library was not found on the drive, so nothing was removed. If the music really is gone, use “Scan for new music” to update the library.', { kind: 'error', duration: 12000 });
+  }
+  if (status === 'interrupted' && outcome.during === 'scan') {
+    toast('The music drive was disconnected during the scan. Your library is unchanged; scan again when the drive is back.', { kind: 'error', duration: 8000 });
+  } else if (status === 'interrupted') {
+    toast('The music drive went away while loading album art.', { kind: 'error' });
+  } else if (status === 'stopped') {
+    toast('Scan stopped.');
+  } else if (status === 'failed') {
+    console.error(outcome.error);
+    toast('The scan ran into a problem and stopped. Your library is unchanged.', { kind: 'error' });
+  }
+  if (status !== 'done') return;
+
+  const changes = [
+    added ? `${plural(added, 'song')} added` : null,
+    updated ? `${updated.toLocaleString()} updated` : null,
+    removed ? `${removed.toLocaleString()} removed` : null,
+  ].filter(Boolean);
+  if (changes.length) toast(`Library updated: ${changes.join(', ')}.`);
+  else if (!quiet) toast('Library is up to date.');
+  // Say once why some of the collection is absent, not on every scan.
+  if (protectedFiles && app.prefs.protectedNoted !== protectedFiles) {
+    app.setPref('protectedNoted', protectedFiles);
+    toast(`${plural(protectedFiles, 'copy-protected iTunes file')} (FairPlay DRM) can only be played by Apple’s apps and ${protectedFiles === 1 ? 'was' : 'were'} left out.`, { duration: 12000 });
+  }
+  if (skipped && !quiet) toast(`${plural(skipped, 'file or folder', 'files or folders')} could not be read and were skipped.`, { kind: 'error' });
 }
 
 // ------------------------------------------------------- sidebar and banner
@@ -831,14 +803,12 @@ async function start() {
   window.addEventListener('hashchange', () => render());
 
   // The saved library shows immediately, whether or not the drive is there.
-  let tracks = [];
   try {
-    [tracks] = await Promise.all([db.getAll('tracks'), app.covers.init(), app.playlists.init(), loadSqlSettings()]);
+    [app.lib] = await Promise.all([loadLibrary(trackStore), app.covers.init(), app.playlists.init(), loadSqlSettings()]);
   } catch (err) {
     console.error(err);
     toast('Your saved library could not be opened. Scanning the drive will rebuild it.', { kind: 'error', duration: 8000 });
   }
-  app.lib = buildLibrary(tracks);
   refreshPlaylistLinks();
   await restoreSession();
 

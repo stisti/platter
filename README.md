@@ -339,6 +339,7 @@ app/
     library.js                  track records -> albums / artists / genres, search
     coverpick.js, covers.js     choosing and thumbnailing cover art
     scanner.js                  incremental walk of the music folder
+    sync.js                     library sync: scan results -> saved records, never losing tracks to a vanished drive
     source.js                   the folder handle: permission and connected/disconnected state
     queue.js, player.js         play queue; audio playback with next-track preloading
     playlists.js, db.js         playlists; IndexedDB storage
