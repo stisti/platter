@@ -1,7 +1,7 @@
 name: PR checks
 
 # Every pull request (opened, reopened, or a new push to it): the unit tests,
-# the CD ripper's tests, then the browser tests - the real app in headless Chromium against a
+# the type check, the CD ripper's tests, then the browser tests - the real app in headless Chromium against a
 # simulated drive built from synthetic FLAC files (test/e2e/harness.mjs).
 #
 # Needs no secrets and only read access, so it is safe to run for pull
@@ -38,6 +38,11 @@ jobs:
 
       - name: Unit tests
         run: npm test
+
+      # tsc reads the JSDoc types of the modules listed in tsconfig.json;
+      # nothing is compiled.
+      - name: Type check
+        run: npm run typecheck
 
       # The CD ripper (scripts/rip) is Python, run through uv. Its tests use
       # synthetic data only; no drive needed. setup-uv publishes no floating

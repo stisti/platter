@@ -365,7 +365,8 @@ npm start           # http://localhost:7373
 npm test            # unit tests (Node only)
 npm run test:e2e    # the real app in headless Chromium, against a simulated drive
 npm run test:rip    # the CD ripper (Python, through uv)
-npm run test:all    # all three
+npm run typecheck   # JSDoc types of the pure modules (see below)
+npm run test:all    # all of the above
 ```
 
 The browser tests need a Chromium: one downloaded by Playwright
@@ -377,6 +378,24 @@ including the way it fails when the folder disappears.
 
 When adding or removing a file under `app/`, update the `ASSETS` list in
 `app/sw.js` (a test checks this).
+
+### Type checking
+
+The code is JavaScript, but `npm run typecheck` runs the TypeScript compiler
+over it as a checker: it reads the types from JSDoc comments (`@param`,
+`@typedef`, `@import`) and compiles nothing, so there is still no build step.
+It covers the modules listed in `tsconfig.json`, so far the pure ones
+(the tag readers, `library.js`, `scanner.js`, `sync.js`, `sqlrows.js`, …).
+To check another module, add it there and fix what `tsc` reports.
+
+The shared shapes are declared once: `TrackRecord` (what is stored per file)
+in `tags.js`; `Track`, `Album`, `Artist`, `Genre` and `Library` in
+`library.js`. Other modules import them with
+`/** @import { Library } from './library.js' */`.
+
+Strict mode is off (TypeScript 7 turns it on by default; `tsconfig.json` turns
+it off). Turning it on would mean typing every function parameter and handling
+every possible `null`, a couple of hundred changes in the pure modules alone.
 
 **SQLite** is the official WebAssembly build, copied from the npm package
 `@sqlite.org/sqlite-wasm` (currently 3.54.1-build1): its `dist/index.mjs` as
@@ -397,8 +416,8 @@ Security Policy (`index.html`); it allows nothing else.
 
 ### CI and publishing
 
-- `.github/workflows/pr.yml` runs the unit, ripper and browser tests on every
-  pull request.
+- `.github/workflows/pr.yml` runs the unit tests, the type check, and the
+  ripper and browser tests on every pull request.
 - `.github/workflows/pages.yml` publishes `app/` to GitHub Pages when a push
   to `main` changes the version (see below), after running the unit tests.
   The `github-pages` environment only accepts deployments from `main`, so

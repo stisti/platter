@@ -13,6 +13,12 @@ import { SCHEMA, COLUMNS } from './sqlrows.js';
 /** Most rows one query returns: more than any library has tracks, far fewer than a careless join makes. */
 export const MAX_ROWS = 100_000;
 
+/**
+ * Not written into the import() below, so the type checker does not follow it
+ * into SQLite's generated, untyped code. import() resolves it against this module either way.
+ */
+const SQLITE_MODULE = '../vendor/sqlite/sqlite3.mjs';
+
 let loading = null;
 
 /**
@@ -21,7 +27,7 @@ let loading = null;
  */
 export function loadSqlite(options = {}) {
   loading ??= (async () => {
-    const { default: init } = await import('../vendor/sqlite/sqlite3.mjs');
+    const { default: init } = await import(SQLITE_MODULE);
     return init({ print: () => {}, printErr: () => {}, ...options });
   })();
   loading.catch(() => {
@@ -44,7 +50,7 @@ function cleanMessage(err) {
 }
 
 export class LibraryDatabase {
-  /** @param {object} sqlite3 what loadSqlite() resolves to */
+  /** @param {any} sqlite3 what loadSqlite() resolves to (the vendored build comes without types) */
   constructor(sqlite3) {
     this.sqlite3 = sqlite3;
     this.db = null;

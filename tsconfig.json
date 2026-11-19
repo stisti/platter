@@ -1,0 +1,36 @@
+{
+  // Type-checks the plain JavaScript in app/js from its JSDoc: nothing is
+  // compiled, the browser still loads the .js files as they are.
+  // `npm run typecheck` runs it; PR CI too.
+  //
+  // Only the pure modules (the ones Node can import too) are checked so far.
+  // To add a module, list it in "include" and fix what tsc reports.
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    // TypeScript 7 defaults to strict; not (yet) here. See README "Type checking".
+    "strict": false,
+    "target": "es2023",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["es2023", "dom", "dom.iterable"],
+    "types": [],
+    "skipLibCheck": true
+  },
+  "include": [
+    "app/js/bytes.js",
+    "app/js/coverpick.js",
+    "app/js/flac.js",
+    "app/js/genres.js",
+    "app/js/id3.js",
+    "app/js/library.js",
+    "app/js/mp4.js",
+    "app/js/queue.js",
+    "app/js/scanner.js",
+    "app/js/sqldb.js",
+    "app/js/sqlrows.js",
+    "app/js/sync.js",
+    "app/js/tags.js"
+  ]
+}
