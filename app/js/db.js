@@ -65,3 +65,11 @@ export const db = {
       for (const key of keys) s.delete(key);
     }),
 };
+
+/** The track records, as Library sync (sync.js) uses them. */
+export const trackStore = {
+  getAll: () => db.getAll('tracks'),
+  putMany: (records) => db.putMany('tracks', records),
+  deleteMany: (paths) => db.deleteMany('tracks', paths),
+  setLastScan: (info) => db.put('kv', info, 'lastScan'),
+};

@@ -946,6 +946,27 @@ test('query: works with the drive unplugged, and follows the library after a res
   });
 });
 
+test('query: a song length learned by playing it reaches SQL', { skip }, async () => {
+  await withApp(async (app) => {
+    const { page } = app;
+    const path = 'Unsorted/Garage Tapes/03 - No Length.flac';
+    await writeDrive(page, { [path]: buildFlac({ tags: { TITLE: 'No Length' }, playable: true, unknownLength: true }) });
+    await page.evaluate(() => window.platter.rescan());
+    await waitForLibrary(page, SAMPLE_TRACKS + 1);
+
+    const sqlDuration = () =>
+      page.evaluate(async (p) => {
+        const db = await window.platter.sqlDatabase();
+        return db.run(`SELECT duration FROM tracks WHERE path = '${p}'`).rows[0]?.[0];
+      }, path);
+    assert.equal(await sqlDuration(), null, 'the tags give no length');
+
+    await page.evaluate((p) => window.platter.play([window.platter.lib.tracks.get(p)], 0), path);
+    await page.waitForFunction((p) => window.platter.lib.tracks.get(p).duration > 0, path, { timeout: 10000 });
+    assert.ok((await sqlDuration()) > 0, 'SQL sees the length the player learned');
+  });
+});
+
 test('query: saved queries, and setup SQL that adds genre families of the owner\'s own', { skip }, async () => {
   await withApp(async (app) => {
     const { page } = app;

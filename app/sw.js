@@ -40,6 +40,7 @@ const ASSETS = [
   'js/genres.js',
   'js/sqldb.js',
   'js/sqlrows.js',
+  'js/sync.js',
   'js/tags.js',
   'js/ui/dom.js',
   'js/ui/playerbar.js',

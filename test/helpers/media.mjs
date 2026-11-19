@@ -80,9 +80,15 @@ function splitFlac(bytes) {
  * @param {boolean} [o.picturesFirst] put PICTURE blocks before the tags (some taggers do)
  * @param {number} [o.padding] bytes of PADDING block at the end of the metadata
  * @param {Uint8Array} [o.prefix] bytes to put before the stream (e.g. an ID3v2 tag)
+ * @param {boolean} [o.unknownLength] with `playable`: STREAMINFO says the length is unknown (0 samples),
+ *   so the app only learns it by playing the file
  */
-export function buildFlac({ tags = {}, pictures = [], playable = false, picturesFirst = false, padding = 0, prefix = null, vendor, ...info } = {}) {
+export function buildFlac({ tags = {}, pictures = [], playable = false, picturesFirst = false, padding = 0, prefix = null, vendor, unknownLength = false, ...info } = {}) {
   const base = playable ? splitFlac(TONE_FLAC) : null;
+  if (base && unknownLength) {
+    base.info[13] &= 0xf0; // total samples: high 4 bits...
+    base.info.fill(0, 14, 18); // ...and low 32 bits
+  }
   const blocks = [{ type: 0, body: base ? base.info : streamInfo(info) }];
   const comment = { type: 4, body: vorbisComment(tags, vendor) };
   const pics = pictures.map((p) => ({ type: 6, body: pictureBlock(p) }));
