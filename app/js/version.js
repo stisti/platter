@@ -3,4 +3,4 @@
 //
 // Must equal "version" in package.json (test/version.test.mjs checks this).
 // Don't edit by hand: `npm version patch|minor|major` updates both.
-export const VERSION = '1.2.1';
+export const VERSION = '1.2.2';
