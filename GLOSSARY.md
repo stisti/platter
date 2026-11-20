@@ -23,3 +23,15 @@ store (that is IndexedDB `tracks`), app.lib (a read of it).
 app already holds, to regroup albums, artists and genres and recount their
 totals. Reads no music files and nothing back from IndexedDB; only Library
 sync reads the drive. _Avoid_: rebuild the library, rescan.
+
+**Library SQL**: SQL over the library, for the Query page. It keeps the SQL
+copy fresh, holds the owner's setup SQL and saved queries, and reads a
+result as songs (a `path` column), albums (`album_key`) or a plain table.
+It watches Library state, playlists and covers for changes itself; nothing
+tells it to refill. Lives in `app/js/librarysql.js` (`LibrarySql`, `app.sql`).
+_Avoid_: query service, database (that is `LibraryDatabase` inside it).
+
+**SQL copy**: the in-memory SQLite tables (`sqlrows.js` schema) filled from
+the built library, playlists and covers, with the setup SQL run after each
+fill. A throwaway copy: nothing in it is stored, and it is refilled lazily,
+on the first query after something it was filled from changed.

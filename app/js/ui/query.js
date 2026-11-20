@@ -1,20 +1,20 @@
 // The Query page: SQL against the library (tables in ../sqlrows.js), with the
 // result shown as songs to play, albums to open, or a plain table.
 //
-// A result with a `path` column is a list of songs; one with `album_key` (and
-// no `path`) is a list of albums; anything else is a table. The page remembers
-// the SQL being written and the last query run (in the preferences), and runs
-// that query again whenever the page is drawn, so the result follows the
-// library through rescans.
+// Library SQL (app.sql, ../librarysql.js) runs the queries and says what a
+// result is a list of; this page only draws. It remembers the SQL being
+// written, the unsaved setup SQL and the last query run (in the preferences),
+// and runs that query again whenever the page is drawn, so the result follows
+// the library through rescans.
 
 import { QueryError } from '../sqldb.js';
 import { h, icon, iconButton, plural, formatLength, promptDialog, confirmDialog, toast } from './dom.js';
 import { pageHeader, emptyState, albumGrid, trackRow, virtualList } from './views.js';
 
 /** The plain table shows at most this many rows. */
-export const TABLE_ROWS = 1000;
+const TABLE_ROWS = 1000;
 
-export const EXAMPLES = [
+const EXAMPLES = [
   {
     name: '80s rock',
     sql: `SELECT s.* FROM songs s JOIN track_families f USING (path)
@@ -125,7 +125,7 @@ export function queryView(app) {
   const save = async () => {
     const name = await promptDialog({ title: 'Save query', label: 'Name', value: savedName(), okLabel: 'Save' });
     if (!name) return;
-    await app.saveQuery(name, editor.value);
+    await app.sql.saveQuery(name, editor.value);
     toast(`Saved “${name}”`);
     app.rerender({ keepScroll: true });
   };
@@ -141,7 +141,7 @@ export function queryView(app) {
             iconButton('close', `Delete “${q.name}”`, async () => {
               const ok = await confirmDialog({ title: `Delete “${q.name}”?`, message: 'The saved query is removed.', okLabel: 'Delete', danger: true });
               if (!ok) return;
-              await app.deleteQuery(q.name);
+              await app.sql.deleteQuery(q.name);
               app.rerender({ keepScroll: true });
             }, { size: 14, cls: 'chip-delete' }),
           ),
@@ -156,15 +156,14 @@ export function queryView(app) {
     autocomplete: 'off',
     'aria-label': 'Setup SQL',
     placeholder: "-- For example, make Synth Pop count as rock too:\nINSERT INTO genre_family VALUES ('synth pop', 'rock');",
-    value: app.sql.setupDraft ?? app.sql.setup,
-    onInput: () => {
-      app.sql.setupDraft = setupEditor.value; // kept across redraws until saved
-    },
+    value: prefs.querySetupDraft ?? app.sql.setup,
+    // Kept across redraws and reloads until saved.
+    onInput: () => app.setPref('querySetupDraft', setupEditor.value),
   });
   const setupStatus = h('div', { class: 'query-setup-status' });
   const setup = h(
     'details',
-    { class: 'query-setup', open: Boolean(app.sqlSetupError() || app.sql.setupDraft != null) },
+    { class: 'query-setup', open: Boolean(app.sql.setupError || prefs.querySetupDraft != null) },
     h('summary', null, 'Setup SQL', app.sql.setup.trim() ? h('span', { class: 'muted' }, ' · on') : null),
     h('p', { class: 'muted small' }, 'Runs after the tables are filled, every time the library changes: add genre families of your own, views, anything. Queries then see the result.'),
     setupEditor,
@@ -175,8 +174,8 @@ export function queryView(app) {
         class: 'btn btn-small',
         type: 'button',
         onClick: async () => {
-          app.sql.setupDraft = null;
-          await app.setSqlSetup(setupEditor.value);
+          app.setPref('querySetupDraft', null);
+          await app.sql.setSetup(setupEditor.value);
           // Redrawing runs the query again, on tables refilled with the new setup.
           app.rerender({ keepScroll: true });
         },
@@ -185,7 +184,7 @@ export function queryView(app) {
     setupStatus,
   );
   const refreshSetupStatus = () => {
-    const error = app.sqlSetupError();
+    const error = app.sql.setupError;
     setupStatus.replaceChildren(error ? h('pre', { class: 'query-error small', role: 'alert' }, `Setup SQL failed: ${error.message}`) : '');
     if (error) setup.open = true;
   };
@@ -200,33 +199,31 @@ export function queryView(app) {
     const slow = setTimeout(() => {
       if (token === runCounter && !disposed) results.replaceChildren(h('p', { class: 'muted query-status' }, 'Starting SQLite…'));
     }, 150);
-    const outcome = {};
+    let result;
+    let error;
     try {
-      outcome.db = await app.sqlDatabase();
-      const started = performance.now();
-      outcome.result = outcome.db.run(ran);
-      outcome.ms = performance.now() - started;
+      result = await app.sql.run(ran);
     } catch (err) {
-      outcome.error = err;
+      error = err;
     } finally {
       clearTimeout(slow);
     }
     if (token !== runCounter || disposed) return;
-    if (outcome.db) {
-      fillSchema(outcome.db);
-      refreshSetupStatus();
-    }
-    if (outcome.error) {
-      const message = outcome.error instanceof QueryError ? outcome.error.message : `SQLite could not be started: ${outcome.error?.message ?? outcome.error}`;
+    fillSchema();
+    refreshSetupStatus();
+    if (error) {
+      const message = error instanceof QueryError ? error.message : `SQLite could not be started: ${error?.message ?? error}`;
       results.replaceChildren(h('pre', { class: 'query-error', role: 'alert' }, message));
       return;
     }
-    results.replaceChildren(...resultView(app, outcome.result, outcome.ms, () => showResults()).filter(Boolean));
+    results.replaceChildren(...resultView(app, result, () => showResults()).filter(Boolean));
   }
 
-  function fillSchema(db) {
+  function fillSchema() {
+    const objects = app.sql.schema();
+    if (!objects.length) return; // SQLite has not started: keep saying so
     schema.replaceChildren(
-      ...db.schema().map((object) =>
+      ...objects.map((object) =>
         h(
           'details',
           { class: 'query-object' },
@@ -274,18 +271,11 @@ export function queryView(app) {
   );
 }
 
-/** What kind of list a result is: songs (a path column), albums (album_key), or neither. */
-export function resultKind(columns) {
-  if (columns.includes('path')) return 'songs';
-  if (columns.includes('album_key')) return 'albums';
-  return 'table';
-}
+/** @param {import('../librarysql.js').QueryResult} result */
+function resultView(app, result, redraw) {
+  const { columns, rows, truncated, ms, kind } = result;
+  if (kind === 'none') return [h('p', { class: 'muted query-status' }, `Done in ${ms.toFixed(0)} ms. The last statement returned no rows to show.`)];
 
-function resultView(app, result, ms, redraw) {
-  const { columns, rows, truncated } = result;
-  if (!columns.length) return [h('p', { class: 'muted query-status' }, `Done in ${ms.toFixed(0)} ms. The last statement returned no rows to show.`)];
-
-  const kind = resultKind(columns);
   const view = kind !== 'table' && app.prefs.queryView === 'table' ? 'table' : kind;
   const toggle =
     kind === 'table'
@@ -313,18 +303,7 @@ function resultView(app, result, ms, redraw) {
   const stopped = truncated ? h('p', { class: 'muted small' }, `Stopped after ${rows.length.toLocaleString()} rows.`) : null;
 
   if (view === 'songs') {
-    const at = columns.indexOf('path');
-    const seen = new Set();
-    const tracks = [];
-    let missing = 0;
-    for (const row of rows) {
-      const path = row[at];
-      if (seen.has(path)) continue;
-      seen.add(path);
-      const track = app.lib.tracks.get(path);
-      if (track && !track._dup) tracks.push(track);
-      else missing++;
-    }
+    const { tracks, missing } = result;
     const duration = tracks.reduce((sum, t) => sum + (t.duration ?? 0), 0);
     const facts = [plural(tracks.length, 'song'), duration ? formatLength(duration) : null, missing ? `${missing.toLocaleString()} not in the library` : null, timing].filter(Boolean).join(' · ');
     const list =
@@ -339,8 +318,7 @@ function resultView(app, result, ms, redraw) {
   }
 
   if (view === 'albums') {
-    const at = columns.indexOf('album_key');
-    const albums = [...new Set(rows.map((row) => row[at]))].map((key) => app.lib.albums.get(key)).filter(Boolean);
+    const { albums } = result;
     const tracks = () => albums.flatMap((album) => album.tracks);
     const facts = [plural(albums.length, 'album'), timing].join(' · ');
     return [

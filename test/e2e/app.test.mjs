@@ -856,7 +856,7 @@ const resultFacts = (page) => page.locator('.query-result-bar [role=status]');
 test('query: SQLite starts, and results are songs to play, albums to open, or a table', { skip }, async () => {
   await withApp(async (app) => {
     const { page } = app;
-    assert.match(await page.evaluate(async () => (await window.platter.sqlDatabase()).run('SELECT sqlite_version()').rows[0][0]), /^3\.\d+\.\d+$/);
+    assert.match(await page.evaluate(async () => (await window.platter.sql.run('SELECT sqlite_version()')).rows[0][0]), /^3\.\d+\.\d+$/);
 
     await page.locator('.nav-link', { hasText: 'Query' }).click();
     await page.waitForSelector('.query-page');
@@ -956,10 +956,10 @@ test('query: a song length learned by playing it reaches SQL, and its album tota
 
     const sqlDurations = () =>
       page.evaluate(async (p) => {
-        const db = await window.platter.sqlDatabase();
-        const [track, album] = db.run(
-          `SELECT t.duration, a.duration FROM tracks t JOIN albums a USING (album_key) WHERE t.path = '${p}'`,
-        ).rows[0];
+        const result = await window.platter.sql.run(
+          `SELECT t.duration AS track, a.duration AS album FROM tracks t JOIN albums a USING (album_key) WHERE t.path = '${p}'`,
+        );
+        const [track, album] = result.rows[0];
         return { track, album };
       }, path);
     const before = await sqlDurations();

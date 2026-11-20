@@ -352,6 +352,7 @@ app/
     playlists.js, db.js         playlists; IndexedDB storage
     genres.js, sqlrows.js       genre families; the library as SQL tables (schema and rows)
     sqldb.js                    SQLite in memory: loading it, filling it, running queries
+    librarysql.js               SQL over the library: kept fresh, setup SQL, saved queries, results as songs/albums
     main.js, ui/                wiring, views, player bar, the Query page (ui/query.js)
     version.js, update.js       the running version; noticing a newer published one
   vendor/sqlite/                SQLite compiled to WebAssembly (@sqlite.org/sqlite-wasm)
