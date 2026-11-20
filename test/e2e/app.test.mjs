@@ -1015,3 +1015,37 @@ test('query: saved queries, and setup SQL that adds genre families of the owner\
     await expectCount(page, '.query-chip', 0);
   });
 });
+
+test('query: unsaved setup SQL is kept across a reload until it is discarded or typed back', { skip }, async () => {
+  await withApp(async (app) => {
+    const { page } = app;
+    await page.goto(`${app.url}#/query`);
+    const setupBox = page.getByRole('textbox', { name: 'Setup SQL' });
+    const discard = page.getByRole('button', { name: 'Discard changes' });
+    const panelOpen = () => page.locator('.query-setup').evaluate((details) => details.open);
+    assert.equal(await discard.isVisible(), false, 'nothing to discard yet');
+
+    // An unsaved change survives a reload, with the panel open to show it.
+    await page.locator('.query-setup summary').click();
+    await setupBox.fill('-- not saved yet');
+    await discard.waitFor();
+    await reloadApp(app);
+    assert.equal(await panelOpen(), true);
+    assert.equal(await setupBox.inputValue(), '-- not saved yet');
+
+    // Discarding puts the saved setup SQL back, and the next start is clean.
+    await discard.click();
+    assert.equal(await setupBox.inputValue(), '');
+    assert.equal(await discard.isVisible(), false);
+    await reloadApp(app);
+    assert.equal(await panelOpen(), false);
+
+    // Typing the saved text back is no change either.
+    await page.locator('.query-setup summary').click();
+    await setupBox.fill('-- changed my mind');
+    await setupBox.fill('');
+    assert.equal(await discard.isVisible(), false);
+    await reloadApp(app);
+    assert.equal(await panelOpen(), false);
+  });
+});

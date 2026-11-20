@@ -150,20 +150,36 @@ export function queryView(app) {
     : null;
 
   // ---- setup SQL, run after every refill of the tables
+  // An unsaved change is a draft, kept across redraws and reloads until it is
+  // saved or discarded. Text that matches the saved setup SQL is no draft.
+  const isDraft = (text) => text != null && text !== app.sql.setup;
+  const setDraft = (text) => {
+    app.setPref('querySetupDraft', isDraft(text) ? text : null);
+    discard.hidden = !isDraft(text);
+  };
+  const hasDraft = isDraft(prefs.querySetupDraft);
   const setupEditor = h('textarea', {
     class: 'query-sql query-setup-sql',
     spellcheck: false,
     autocomplete: 'off',
     'aria-label': 'Setup SQL',
     placeholder: "-- For example, make Synth Pop count as rock too:\nINSERT INTO genre_family VALUES ('synth pop', 'rock');",
-    value: prefs.querySetupDraft ?? app.sql.setup,
-    // Kept across redraws and reloads until saved.
-    onInput: () => app.setPref('querySetupDraft', setupEditor.value),
+    value: hasDraft ? prefs.querySetupDraft : app.sql.setup,
+    onInput: () => setDraft(setupEditor.value),
   });
+  const discard = h('button', {
+    class: 'btn btn-small',
+    type: 'button',
+    hidden: !hasDraft,
+    onClick: () => {
+      setupEditor.value = app.sql.setup;
+      setDraft(null);
+    },
+  }, 'Discard changes');
   const setupStatus = h('div', { class: 'query-setup-status' });
   const setup = h(
     'details',
-    { class: 'query-setup', open: Boolean(app.sql.setupError || prefs.querySetupDraft != null) },
+    { class: 'query-setup', open: Boolean(app.sql.setupError || hasDraft) },
     h('summary', null, 'Setup SQL', app.sql.setup.trim() ? h('span', { class: 'muted' }, ' · on') : null),
     h('p', { class: 'muted small' }, 'Runs after the tables are filled, every time the library changes: add genre families of your own, views, anything. Queries then see the result.'),
     setupEditor,
@@ -174,12 +190,13 @@ export function queryView(app) {
         class: 'btn btn-small',
         type: 'button',
         onClick: async () => {
-          app.setPref('querySetupDraft', null);
+          setDraft(null);
           await app.sql.setSetup(setupEditor.value);
           // Redrawing runs the query again, on tables refilled with the new setup.
           app.rerender({ keepScroll: true });
         },
       }, 'Save and apply'),
+      discard,
     ),
     setupStatus,
   );
