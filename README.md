@@ -12,6 +12,12 @@ Nothing is uploaded anywhere. The music stays on the drive; Platter only reads
 it. The library index, cover thumbnails and playlists are stored locally in
 Chrome.
 
+How it all works, explained for readers new to Chromebooks or web apps (how
+a browser plays FLAC, how a web page can read a USB drive, what happens when
+the drive is unplugged): the
+[Platter Wiki](https://claude.ai/artifact/BkCUbFQpcP8vFDXoNmUjy2), written for
+version 1.2.1.
+
 ## Install it on the Chromebook
 
 1. In Chrome, open **https://stisti.github.io/platter/**.
