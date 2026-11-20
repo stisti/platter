@@ -31,6 +31,7 @@ const ASSETS = [
   'js/flac.js',
   'js/id3.js',
   'js/library.js',
+  'js/librarysql.js',
   'js/librarystate.js',
   'js/mp4.js',
   'js/player.js',

@@ -25,6 +25,7 @@
     "app/js/genres.js",
     "app/js/id3.js",
     "app/js/library.js",
+    "app/js/librarysql.js",
     "app/js/librarystate.js",
     "app/js/mp4.js",
     "app/js/queue.js",

@@ -856,7 +856,7 @@ const resultFacts = (page) => page.locator('.query-result-bar [role=status]');
 test('query: SQLite starts, and results are songs to play, albums to open, or a table', { skip }, async () => {
   await withApp(async (app) => {
     const { page } = app;
-    assert.match(await page.evaluate(async () => (await window.platter.sqlDatabase()).run('SELECT sqlite_version()').rows[0][0]), /^3\.\d+\.\d+$/);
+    assert.match(await page.evaluate(async () => (await window.platter.sql.run('SELECT sqlite_version()')).rows[0][0]), /^3\.\d+\.\d+$/);
 
     await page.locator('.nav-link', { hasText: 'Query' }).click();
     await page.waitForSelector('.query-page');
@@ -956,10 +956,10 @@ test('query: a song length learned by playing it reaches SQL, and its album tota
 
     const sqlDurations = () =>
       page.evaluate(async (p) => {
-        const db = await window.platter.sqlDatabase();
-        const [track, album] = db.run(
-          `SELECT t.duration, a.duration FROM tracks t JOIN albums a USING (album_key) WHERE t.path = '${p}'`,
-        ).rows[0];
+        const result = await window.platter.sql.run(
+          `SELECT t.duration AS track, a.duration AS album FROM tracks t JOIN albums a USING (album_key) WHERE t.path = '${p}'`,
+        );
+        const [track, album] = result.rows[0];
         return { track, album };
       }, path);
     const before = await sqlDurations();
@@ -1013,5 +1013,39 @@ test('query: saved queries, and setup SQL that adds genre families of the owner\
     await expectCount(page, '.query-chip', 0);
     await reloadApp(app);
     await expectCount(page, '.query-chip', 0);
+  });
+});
+
+test('query: unsaved setup SQL is kept across a reload until it is discarded or typed back', { skip }, async () => {
+  await withApp(async (app) => {
+    const { page } = app;
+    await page.goto(`${app.url}#/query`);
+    const setupBox = page.getByRole('textbox', { name: 'Setup SQL' });
+    const discard = page.getByRole('button', { name: 'Discard changes' });
+    const panelOpen = () => page.locator('.query-setup').evaluate((details) => details.open);
+    assert.equal(await discard.isVisible(), false, 'nothing to discard yet');
+
+    // An unsaved change survives a reload, with the panel open to show it.
+    await page.locator('.query-setup summary').click();
+    await setupBox.fill('-- not saved yet');
+    await discard.waitFor();
+    await reloadApp(app);
+    assert.equal(await panelOpen(), true);
+    assert.equal(await setupBox.inputValue(), '-- not saved yet');
+
+    // Discarding puts the saved setup SQL back, and the next start is clean.
+    await discard.click();
+    assert.equal(await setupBox.inputValue(), '');
+    assert.equal(await discard.isVisible(), false);
+    await reloadApp(app);
+    assert.equal(await panelOpen(), false);
+
+    // Typing the saved text back is no change either.
+    await page.locator('.query-setup summary').click();
+    await setupBox.fill('-- changed my mind');
+    await setupBox.fill('');
+    assert.equal(await discard.isVisible(), false);
+    await reloadApp(app);
+    assert.equal(await panelOpen(), false);
   });
 });

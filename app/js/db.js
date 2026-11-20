@@ -73,3 +73,9 @@ export const trackStore = {
   deleteMany: (paths) => db.deleteMany('tracks', paths),
   setLastScan: (info) => db.put('kv', info, 'lastScan'),
 };
+
+/** Small settings in the `kv` store, as Library SQL (librarysql.js) uses them. */
+export const kvStore = {
+  get: (key) => db.get('kv', key),
+  put: (key, value) => db.put('kv', value, key),
+};
