@@ -946,7 +946,7 @@ test('query: works with the drive unplugged, and follows the library after a res
   });
 });
 
-test('query: a song length learned by playing it reaches SQL', { skip }, async () => {
+test('query: a song length learned by playing it reaches SQL, and its album total', { skip }, async () => {
   await withApp(async (app) => {
     const { page } = app;
     const path = 'Unsorted/Garage Tapes/03 - No Length.flac';
@@ -954,16 +954,22 @@ test('query: a song length learned by playing it reaches SQL', { skip }, async (
     await page.evaluate(() => window.platter.rescan());
     await waitForLibrary(page, SAMPLE_TRACKS + 1);
 
-    const sqlDuration = () =>
+    const sqlDurations = () =>
       page.evaluate(async (p) => {
         const db = await window.platter.sqlDatabase();
-        return db.run(`SELECT duration FROM tracks WHERE path = '${p}'`).rows[0]?.[0];
+        const [track, album] = db.run(
+          `SELECT t.duration, a.duration FROM tracks t JOIN albums a USING (album_key) WHERE t.path = '${p}'`,
+        ).rows[0];
+        return { track, album };
       }, path);
-    assert.equal(await sqlDuration(), null, 'the tags give no length');
+    const before = await sqlDurations();
+    assert.equal(before.track, null, 'the tags give no length');
 
     await page.evaluate((p) => window.platter.play([window.platter.lib.tracks.get(p)], 0), path);
     await page.waitForFunction((p) => window.platter.lib.tracks.get(p).duration > 0, path, { timeout: 10000 });
-    assert.ok((await sqlDuration()) > 0, 'SQL sees the length the player learned');
+    const after = await sqlDurations();
+    assert.ok(after.track > 0, 'SQL sees the length the player learned');
+    assert.ok(Math.abs(after.album - (before.album + after.track)) < 0.001, 'and the album total includes it');
   });
 });
 
