@@ -6,9 +6,9 @@ import { MusicSource } from './source.js';
 import { Player } from './player.js';
 import { Playlists } from './playlists.js';
 import { CoverStore } from './covers.js';
-import { loadLibrary, syncLibrary } from './sync.js';
+import { LibraryState } from './librarystate.js';
 import { readTrack } from './tags.js';
-import { emptyLibrary, keyOf, toRecord } from './library.js';
+import { keyOf } from './library.js';
 import { libraryRows } from './sqlrows.js';
 import { loadSqlite, LibraryDatabase } from './sqldb.js';
 import { h, icon, iconButton, toast, openMenu, plural, promptDialog, playlistDialog } from './ui/dom.js';
@@ -51,7 +51,12 @@ const $ = (id) => document.getElementById(id);
 
 const app = {
   supported: MusicSource.supported,
-  lib: emptyLibrary(),
+  /** The library and every change to it (librarystate.js); `change` events say when it is replaced. */
+  library: new LibraryState({ store: trackStore }),
+  /** The library being shown. Never edited in place: a change replaces it. */
+  get lib() {
+    return this.library.current;
+  },
   source: new MusicSource(),
   covers: new CoverStore(),
   playlists: new Playlists(),
@@ -293,19 +298,14 @@ const app = {
     if (this.lib.tracks.size === 0) render();
 
     try {
-      const outcome = await syncLibrary({
-        lib: this.lib,
+      // The libraries it hands back arrive as `change` events (see showLibrary).
+      const outcome = await this.library.sync({
         root: this.source.root,
-        store: trackStore,
         readTrack,
         buildCovers: (options) => this.covers.build({ ...options, getFile: (path) => this.source.getFile(path) }),
         isAlive: async () => (await this.source.check()) === 'connected',
         quiet,
         signal: controller.signal,
-        onLibrary: (lib, reason) => {
-          setLibrary(lib);
-          if (reason === 'scanned') this.player.pruneQueue();
-        },
         onProgress: (progress) => {
           this.scan.progress = progress;
           refreshScanStatus();
@@ -399,12 +399,15 @@ function markPlaying() {
   for (const row of app.scroller.querySelectorAll('.track')) row.classList.toggle('playing', row.dataset.path === path && path !== undefined);
 }
 
-function setLibrary(lib) {
-  app.lib = lib;
+/** Shows a library that replaced the previous one, whatever the reason: a scan, a song length learned. */
+function showLibrary({ reason }) {
+  // At startup, start() renders once everything has loaded.
+  if (reason === 'loaded') return;
   render({ keepScroll: true });
   refreshChrome();
   ui.playerBar?.refresh();
   ui.queuePanel?.render();
+  if (reason === 'scanned') app.player.pruneQueue();
 }
 
 /** Tells the user what a library sync did (see syncLibrary's outcome). */
@@ -651,9 +654,7 @@ function wirePlayer() {
   player.addEventListener('durationknown', (event) => {
     // Formats whose length can't be read from tags: remember it once played.
     const { track, duration } = event.detail;
-    track.duration = duration;
-    app.sql.changes++; // the track changed in place, so the SQL copy must refill
-    db.put('tracks', toRecord(track)).catch(() => {});
+    app.library.learnDuration(track.path, duration);
   });
   player.addEventListener('error', (event) => {
     const { kind, state, reason, track } = event.detail;
@@ -790,6 +791,7 @@ async function start() {
   wirePlayer();
   wireKeyboard();
 
+  app.library.addEventListener('change', (event) => showLibrary(event.detail));
   app.playlists.addEventListener('change', () => {
     app.sql.changes++;
     refreshPlaylistLinks();
@@ -804,7 +806,7 @@ async function start() {
 
   // The saved library shows immediately, whether or not the drive is there.
   try {
-    [app.lib] = await Promise.all([loadLibrary(trackStore), app.covers.init(), app.playlists.init(), loadSqlSettings()]);
+    await Promise.all([app.library.load(), app.covers.init(), app.playlists.init(), loadSqlSettings()]);
   } catch (err) {
     console.error(err);
     toast('Your saved library could not be opened. Scanning the drive will rebuild it.', { kind: 'error', duration: 8000 });
