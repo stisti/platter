@@ -21,6 +21,34 @@ const PICTURE_FRONT_COVER = 3;
  *   picture: {offset: number, length: number, mime: string}|null}>}
  */
 export async function parseFlac(reader) {
+  let pos = await metadataStart(reader);
+  const out = {
+    tags: {},
+    duration: null,
+    sampleRate: null,
+    channels: null,
+    bitsPerSample: null,
+    picture: null,
+  };
+  const seen = { info: false, comment: false, pictureType: -1 };
+
+  for (let guard = 0; guard < 1024; guard++) {
+    const block = await readBlockHeader(reader, pos);
+    if (!block) break;
+    await readBlock(reader, block, out, seen);
+
+    // With stream info, tags and the front cover in hand there is nothing more
+    // to learn - and not looking past a multi-megabyte picture saves a disk seek.
+    if (seen.info && seen.comment && seen.pictureType === PICTURE_FRONT_COVER) break;
+
+    pos = block.body + block.length;
+    if (block.last || pos >= reader.size) break;
+  }
+  return out;
+}
+
+/** Where the first metadata block starts, after the "fLaC" marker. Throws for a file that is not FLAC. */
+async function metadataStart(reader) {
   let pos = 0;
   let head = await reader.read(0, 10);
 
@@ -32,63 +60,51 @@ export async function parseFlac(reader) {
   if (head.length < 4 || head[0] !== 0x66 || head[1] !== 0x4c || head[2] !== 0x61 || head[3] !== 0x43) {
     throw new Error('Not a FLAC file');
   }
-  pos += 4;
+  return pos + 4;
+}
 
-  const out = {
-    tags: {},
-    duration: null,
-    sampleRate: null,
-    channels: null,
-    bitsPerSample: null,
-    picture: null,
-  };
-  let pictureType = -1;
-  let sawInfo = false;
-  let sawComment = false;
+/** The metadata block header at `pos`, or null where there is no valid one. */
+async function readBlockHeader(reader, pos) {
+  const hdr = await reader.read(pos, 4);
+  if (hdr.length < 4) return null;
+  const type = hdr[0] & 0x7f;
+  if (type === 127) return null; // invalid block type: the stream is corrupt
+  return { last: (hdr[0] & 0x80) !== 0, type, length: be24(hdr, 1), body: pos + 4 };
+}
 
-  for (let guard = 0; guard < 1024; guard++) {
-    const hdr = await reader.read(pos, 4);
-    if (hdr.length < 4) break;
-    const last = (hdr[0] & 0x80) !== 0;
-    const type = hdr[0] & 0x7f;
-    const length = be24(hdr, 1);
-    const body = pos + 4;
-    if (type === 127) break; // invalid block type: the stream is corrupt
-
-    if (type === BLOCK_STREAMINFO) {
-      sawInfo = true;
-      const b = await reader.read(body, Math.min(length, 34));
-      if (b.length >= 18) {
-        const sampleRate = (b[10] << 12) | (b[11] << 4) | (b[12] >> 4);
-        const totalSamples = (b[13] & 0x0f) * 2 ** 32 + be32(b, 14);
-        out.sampleRate = sampleRate || null;
-        out.channels = ((b[12] >> 1) & 0x07) + 1;
-        out.bitsPerSample = (((b[12] & 0x01) << 4) | (b[13] >> 4)) + 1;
-        out.duration = sampleRate && totalSamples ? totalSamples / sampleRate : null;
-      }
-    } else if (type === BLOCK_VORBIS_COMMENT) {
-      sawComment = true;
-      if (length <= MAX_COMMENT_BLOCK) {
-        const b = await reader.read(body, length);
-        if (b.length === length) parseVorbisComment(b, out.tags);
-      }
-    } else if (type === BLOCK_PICTURE) {
-      const pic = await readPictureBlock(reader, body, length);
-      // Prefer the front cover; otherwise keep the first picture found.
-      if (pic && (out.picture === null || (pic.type === PICTURE_FRONT_COVER && pictureType !== PICTURE_FRONT_COVER))) {
-        out.picture = { offset: pic.offset, length: pic.length, mime: pic.mime };
-        pictureType = pic.type;
-      }
+/** Reads one metadata block into `out`, noting in `seen` what has been found so far. */
+async function readBlock(reader, block, out, seen) {
+  if (block.type === BLOCK_STREAMINFO) {
+    seen.info = true;
+    await readStreamInfo(reader, block, out);
+  } else if (block.type === BLOCK_VORBIS_COMMENT) {
+    seen.comment = true;
+    await readCommentBlock(reader, block, out.tags);
+  } else if (block.type === BLOCK_PICTURE) {
+    const pic = await readPictureBlock(reader, block.body, block.length);
+    // Prefer the front cover; otherwise keep the first picture found.
+    if (pic && (out.picture === null || (pic.type === PICTURE_FRONT_COVER && seen.pictureType !== PICTURE_FRONT_COVER))) {
+      out.picture = { offset: pic.offset, length: pic.length, mime: pic.mime };
+      seen.pictureType = pic.type;
     }
-
-    // With stream info, tags and the front cover in hand there is nothing more
-    // to learn - and not looking past a multi-megabyte picture saves a disk seek.
-    if (sawInfo && sawComment && pictureType === PICTURE_FRONT_COVER) break;
-
-    pos = body + length;
-    if (last || pos >= reader.size) break;
   }
-  return out;
+}
+
+async function readStreamInfo(reader, block, out) {
+  const b = await reader.read(block.body, Math.min(block.length, 34));
+  if (b.length < 18) return;
+  const sampleRate = (b[10] << 12) | (b[11] << 4) | (b[12] >> 4);
+  const totalSamples = (b[13] & 0x0f) * 2 ** 32 + be32(b, 14);
+  out.sampleRate = sampleRate || null;
+  out.channels = ((b[12] >> 1) & 0x07) + 1;
+  out.bitsPerSample = (((b[12] & 0x01) << 4) | (b[13] >> 4)) + 1;
+  out.duration = sampleRate && totalSamples ? totalSamples / sampleRate : null;
+}
+
+async function readCommentBlock(reader, block, tags) {
+  if (block.length > MAX_COMMENT_BLOCK) return;
+  const b = await reader.read(block.body, block.length);
+  if (b.length === block.length) parseVorbisComment(b, tags);
 }
 
 async function readPictureBlock(reader, body, blockLength) {

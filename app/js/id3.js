@@ -47,53 +47,96 @@ export async function parseMp3(reader) {
 
 async function readFrames(reader, major, tagFlags, tagEnd, out) {
   const tagUnsync = (tagFlags & 0x80) !== 0;
-  let pos = 10;
-  if (major >= 3 && tagFlags & 0x40) {
-    const e = await reader.read(pos, 4);
-    if (e.length < 4) return;
-    pos += major === 4 ? syncsafe(e, 0) : be32(e, 0) + 4;
-  }
-  const idLength = major === 2 ? 3 : 4;
-  const headerLength = major === 2 ? 6 : 10;
+  let pos = await firstFramePos(reader, major, tagFlags);
+  if (pos === null) return;
   let pictureType = -1;
 
-  while (pos + headerLength <= tagEnd) {
-    const fh = await reader.read(pos, headerLength);
-    if (fh.length < headerLength || fh[0] === 0) break; // reached the padding
-    const id = latin1(fh.subarray(0, idLength));
-    if (!/^[A-Z0-9]+$/.test(id)) break;
-    const size = major === 2 ? be24(fh, 3) : major === 4 ? syncsafe(fh, 4) : be32(fh, 4);
-    const formatFlags = major === 2 ? 0 : fh[9];
-    let dataPos = pos + headerLength;
-    pos = dataPos + size;
-    if (size === 0 || pos > tagEnd) break;
-
-    let dataLength = size;
-    let unsync = tagUnsync;
-    if (major === 4) {
-      if (formatFlags & 0x0c) continue; // compressed or encrypted
-      if (formatFlags & 0x02) unsync = true;
-      if (formatFlags & 0x01) { dataPos += 4; dataLength -= 4; } // data length indicator
-    } else if (major === 3 && formatFlags & 0xc0) {
-      continue; // compressed or encrypted
-    }
-    if (dataLength <= 0) continue;
-
-    const key = FRAME_MAP[id];
-    if (key) {
-      if (dataLength > MAX_TEXT_FRAME) continue;
-      let d = await reader.read(dataPos, dataLength);
-      if (unsync) d = removeUnsync(d);
-      for (const value of decodeText(d)) (out.tags[key] ??= []).push(value);
-    } else if ((id === 'APIC' || id === 'PIC') && !unsync) {
-      const d = await reader.read(dataPos, Math.min(dataLength, 512));
-      const pic = parsePictureHeader(d, id === 'PIC');
-      if (pic && pic.headerLength < dataLength && (out.picture === null || (pic.type === 3 && pictureType !== 3))) {
-        out.picture = { offset: dataPos + pic.headerLength, length: dataLength - pic.headerLength, mime: pic.mime };
+  for (let frame; (frame = await readFrameHeader(reader, pos, major, tagEnd)); pos = frame.end) {
+    const body = frameBody(frame, major, tagUnsync);
+    if (!body) continue;
+    if (FRAME_MAP[body.id]) {
+      await readTextFrame(reader, body, out.tags);
+    } else if ((body.id === 'APIC' || body.id === 'PIC') && !body.unsync) {
+      const pic = await readPictureFrame(reader, body);
+      // Prefer the front cover; otherwise keep the first picture found.
+      if (pic && (out.picture === null || (pic.type === 3 && pictureType !== 3))) {
+        out.picture = { offset: pic.offset, length: pic.length, mime: pic.mime };
         pictureType = pic.type;
       }
     }
   }
+}
+
+/** Where the first frame starts: after the tag header and any extended header. Null when the tag is cut short. */
+async function firstFramePos(reader, major, tagFlags) {
+  if (major < 3 || !(tagFlags & 0x40)) return 10;
+  const e = await reader.read(10, 4);
+  if (e.length < 4) return null;
+  return 10 + (major === 4 ? syncsafe(e, 0) : be32(e, 0) + 4);
+}
+
+/** Frame header layout by ID3v2 major version. */
+const FRAME_HEADERS = {
+  2: { idLength: 3, headerLength: 6, size: (fh) => be24(fh, 3), flags: () => 0 },
+  3: { idLength: 4, headerLength: 10, size: (fh) => be32(fh, 4), flags: (fh) => fh[9] },
+  4: { idLength: 4, headerLength: 10, size: (fh) => syncsafe(fh, 4), flags: (fh) => fh[9] },
+};
+
+/**
+ * Reads the frame header at `pos`. Null where the frames end: at the padding,
+ * at something that is not a frame, or at a frame that runs past the tag.
+ */
+async function readFrameHeader(reader, pos, major, tagEnd) {
+  const layout = FRAME_HEADERS[major];
+  if (pos + layout.headerLength > tagEnd) return null;
+  const fh = await reader.read(pos, layout.headerLength);
+  if (fh.length < layout.headerLength || fh[0] === 0) return null; // reached the padding
+  const id = latin1(fh.subarray(0, layout.idLength));
+  if (!/^[A-Z0-9]+$/.test(id)) return null;
+  const size = layout.size(fh);
+  const dataPos = pos + layout.headerLength;
+  const end = dataPos + size;
+  if (size === 0 || end > tagEnd) return null;
+  return { id, formatFlags: layout.flags(fh), dataPos, size, end };
+}
+
+/**
+ * Where a frame's data is and whether it is unsynchronised, after its format
+ * flags. Null for a frame that cannot be read: compressed, encrypted or empty.
+ */
+function frameBody(frame, major, tagUnsync) {
+  const { id, formatFlags } = frame;
+  let { dataPos, size: dataLength } = frame;
+  let unsync = tagUnsync;
+  if (major === 4) {
+    if (formatFlags & 0x0c) return null; // compressed or encrypted
+    if (formatFlags & 0x02) unsync = true;
+    if (formatFlags & 0x01) { dataPos += 4; dataLength -= 4; } // data length indicator
+  } else if (major === 3 && formatFlags & 0xc0) {
+    return null; // compressed or encrypted
+  }
+  return dataLength > 0 ? { id, dataPos, dataLength, unsync } : null;
+}
+
+async function readTextFrame(reader, body, tags) {
+  if (body.dataLength > MAX_TEXT_FRAME) return;
+  let d = await reader.read(body.dataPos, body.dataLength);
+  if (body.unsync) d = removeUnsync(d);
+  const key = FRAME_MAP[body.id];
+  for (const value of decodeText(d)) (tags[key] ??= []).push(value);
+}
+
+/** An APIC (or v2.2 PIC) frame: where its image data is, or null. */
+async function readPictureFrame(reader, body) {
+  const d = await reader.read(body.dataPos, Math.min(body.dataLength, 512));
+  const pic = parsePictureHeader(d, body.id === 'PIC');
+  if (!pic || pic.headerLength >= body.dataLength) return null;
+  return {
+    type: pic.type,
+    offset: body.dataPos + pic.headerLength,
+    length: body.dataLength - pic.headerLength,
+    mime: pic.mime,
+  };
 }
 
 function removeUnsync(d) {
@@ -196,27 +239,41 @@ const SAMPLE_RATES = { 3: [44100, 48000, 32000], 2: [22050, 24000, 16000], 0: [1
 async function estimateDuration(reader, audioStart) {
   const b = (await reader.read(audioStart, 4096)).slice();
   for (let i = 0; i + 4 <= b.length; i++) {
-    if (b[i] !== 0xff || (b[i + 1] & 0xe0) !== 0xe0) continue;
-    const version = (b[i + 1] >> 3) & 3; // 3 = MPEG1, 2 = MPEG2, 0 = MPEG2.5
-    const layer = (b[i + 1] >> 1) & 3; // 1 = layer III
-    const bitrateIndex = b[i + 2] >> 4;
-    const rateIndex = (b[i + 2] >> 2) & 3;
-    if (version === 1 || layer !== 1 || bitrateIndex === 0 || bitrateIndex === 15 || rateIndex === 3) continue;
-    const sampleRate = SAMPLE_RATES[version][rateIndex];
-    const bitrate = (version === 3 ? BITRATES_V1_L3 : BITRATES_V2_L3)[bitrateIndex] * 1000;
-    const mono = (b[i + 3] >> 6) === 3;
-    const samplesPerFrame = version === 3 ? 1152 : 576;
-    const sideInfo = version === 3 ? (mono ? 17 : 32) : mono ? 9 : 17;
-    const x = i + 4 + sideInfo;
-    if (x + 12 <= b.length) {
-      const marker = latin1(b.subarray(x, x + 4));
-      if ((marker === 'Xing' || marker === 'Info') && b[x + 7] & 0x01) {
-        const frames = be32(b, x + 8);
-        if (frames > 0) return (frames * samplesPerFrame) / sampleRate;
-      }
-    }
+    const frame = mpegFrameHeader(b, i);
+    if (!frame) continue;
+    const frames = xingFrameCount(b, i + 4 + frame.sideInfo);
+    if (frames) return (frames * frame.samplesPerFrame) / frame.sampleRate;
     const audioBytes = reader.size - (audioStart + i);
-    return audioBytes > 0 ? (audioBytes * 8) / bitrate : null;
+    return audioBytes > 0 ? (audioBytes * 8) / frame.bitrate : null;
   }
   return null;
+}
+
+/** The MPEG layer III frame header at `i`, or null when there is none. */
+function mpegFrameHeader(b, i) {
+  if (b[i] !== 0xff || (b[i + 1] & 0xe0) !== 0xe0) return null;
+  const version = (b[i + 1] >> 3) & 3; // 3 = MPEG1, 2 = MPEG2, 0 = MPEG2.5
+  const layer = (b[i + 1] >> 1) & 3; // 1 = layer III
+  const bitrateIndex = b[i + 2] >> 4;
+  const rateIndex = (b[i + 2] >> 2) & 3;
+  if (version === 1 || layer !== 1 || bitrateIndex === 0 || bitrateIndex === 15 || rateIndex === 3) return null;
+  const mpeg1 = version === 3;
+  const mono = (b[i + 3] >> 6) === 3;
+  return {
+    sampleRate: SAMPLE_RATES[version][rateIndex],
+    bitrate: (mpeg1 ? BITRATES_V1_L3 : BITRATES_V2_L3)[bitrateIndex] * 1000,
+    samplesPerFrame: mpeg1 ? 1152 : 576,
+    sideInfo: SIDE_INFO_LENGTH[mpeg1 ? 'mpeg1' : 'mpeg2'][mono ? 'mono' : 'stereo'],
+  };
+}
+
+const SIDE_INFO_LENGTH = { mpeg1: { mono: 17, stereo: 32 }, mpeg2: { mono: 9, stereo: 17 } };
+
+/** The frame count of a Xing/Info header at `x`, or null when there is none. */
+function xingFrameCount(b, x) {
+  if (x + 12 > b.length) return null;
+  const marker = latin1(b.subarray(x, x + 4));
+  if ((marker !== 'Xing' && marker !== 'Info') || !(b[x + 7] & 0x01)) return null;
+  const frames = be32(b, x + 8);
+  return frames > 0 ? frames : null;
 }

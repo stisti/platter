@@ -143,38 +143,52 @@ const ADOPTED_FIELDS = ['album', 'albumArtist', 'artist', 'year', 'originalYear'
  * the library always starts from what the file itself says.
  */
 function adoptFolderTags(records) {
+  for (const { weak, strong } of foldersOfGuessedAlbums(records).values()) adoptAlbum(weak, strong);
+}
+
+const albumGuessed = (t) => t.guessed?.includes('album');
+
+/**
+ * The folders that have tracks with a guessed album: in each, those tracks
+ * (`weak`, reset to what their files say) and the ones with an album tag
+ * (`strong`).
+ */
+function foldersOfGuessedAlbums(records) {
+  /** @type {Map<string, {weak: Track[], strong: Track[]}>} */
   const folders = new Map();
   for (const t of records) {
-    if (!t.guessed?.includes('album')) continue;
+    if (!albumGuessed(t)) continue;
     t._orig ??= Object.fromEntries(ADOPTED_FIELDS.map((f) => [f, t[f]]));
     Object.assign(t, t._orig);
     const dir = dirOf(t.path);
     if (!folders.has(dir)) folders.set(dir, { weak: [], strong: [] });
     folders.get(dir).weak.push(t);
   }
-  if (!folders.size) return;
+  if (!folders.size) return folders;
   for (const t of records) {
-    if (!t.guessed?.includes('album')) folders.get(dirOf(t.path))?.strong.push(t);
+    if (!albumGuessed(t)) folders.get(dirOf(t.path))?.strong.push(t);
   }
+  return folders;
+}
 
-  for (const { weak, strong } of folders.values()) {
-    if (!strong.length) continue;
-    const albumKey = mostCommon(strong.map((t) => keyOf(t.album)));
-    const peers = strong.filter((t) => keyOf(t.album) === albumKey);
-    if (peers.length * 2 < strong.length) continue; // a mixed bag: no album to adopt
-    const [first] = peers;
-    const oneArtist = peers.every((p) => keyOf(p.artist) === keyOf(first.artist));
-    const albumArtist = mostCommon(peers.map((p) => p.albumArtist));
-    const year = mostCommon(peers.map((p) => p.year));
-    const originalYear = mostCommon(peers.map((p) => p.originalYear));
-    for (const t of weak) {
-      t.album = first.album;
-      t.albumArtist = albumArtist;
-      if (t.guessed.includes('artist')) t.artist = oneArtist ? first.artist : albumArtist ?? t.artist;
-      t.year ??= year;
-      t.originalYear ??= originalYear;
-      if (!t.genres.length) t.genres = first.genres;
-    }
+/** Gives the `weak` tracks of a folder the album its `strong` ones mostly agree on, if they do. */
+function adoptAlbum(weak, strong) {
+  if (!strong.length) return;
+  const albumKey = mostCommon(strong.map((t) => keyOf(t.album)));
+  const peers = strong.filter((t) => keyOf(t.album) === albumKey);
+  if (peers.length * 2 < strong.length) return; // a mixed bag: no album to adopt
+  const [first] = peers;
+  const oneArtist = peers.every((p) => keyOf(p.artist) === keyOf(first.artist));
+  const albumArtist = mostCommon(peers.map((p) => p.albumArtist));
+  const year = mostCommon(peers.map((p) => p.year));
+  const originalYear = mostCommon(peers.map((p) => p.originalYear));
+  for (const t of weak) {
+    t.album = first.album;
+    t.albumArtist = albumArtist;
+    if (t.guessed.includes('artist')) t.artist = oneArtist ? first.artist : albumArtist ?? t.artist;
+    t.year ??= year;
+    t.originalYear ??= originalYear;
+    if (!t.genres.length) t.genres = first.genres;
   }
 }
 
@@ -265,32 +279,87 @@ function compareAlbumsChronologically(a, b) {
  *   library built before). Each gets the derived `_` fields of a Track.
  */
 export function buildLibrary(trackRecords) {
+  const records = Array.isArray(trackRecords) ? trackRecords : [...trackRecords];
+  adoptFolderTags(records);
+  const tracks = resolveAlbumArtists(records);
+  const albums = groupAlbums(tracks);
+  let duplicates = 0;
+  for (const album of albums.values()) duplicates += finishAlbum(album);
+
+  const sortedAlbums = [...albums.values()].sort(
+    (a, b) => collator.compare(sortName(a.artist), sortName(b.artist)) || compareAlbumsChronologically(a, b),
+  );
+  const { artists, genres } = indexArtistsAndGenres(sortedAlbums);
+
+  const lib = {
+    /** Every known file, including duplicate copies that the lenses leave out. */
+    tracks,
+    /** Number of distinct songs: what the lenses show. */
+    songCount: tracks.size - duplicates,
+    duplicates,
+    albums,
+    artists,
+    genres,
+    sortedAlbums,
+    /** The Artists lens lists album artists; guest-only artists are reachable through search. */
+    sortedArtists: [...artists.values()]
+      .filter((a) => a.albums.length > 0)
+      .sort((a, b) => collator.compare(sortName(a.name), sortName(b.name))),
+    sortedGenres: [...genres.values()].sort((a, b) => collator.compare(a.name, b.name)),
+    /** @type {Track[]|null} */
+    _sortedTracks: null,
+    /** All tracks by title. Sorted on first use, since many sessions never open the Songs view. */
+    get sortedTracks() {
+      this._sortedTracks ??= [...tracks.values()].filter((t) => !t._dup).sort(
+        (a, b) => collator.compare(a.title, b.title) || collator.compare(a.artist, b.artist),
+      );
+      return this._sortedTracks;
+    },
+  };
+  return lib;
+}
+
+/**
+ * Resets the derived fields of every track and sets `_aa`, its album artist:
+ * the tag, or for untagged tracks what resolveAlbumArtist makes of the
+ * tracks of the same album in the same folder.
+ *
+ * @param {Track[]} trackRecords
+ * @returns {Map<string, Track>} by path
+ */
+function resolveAlbumArtists(trackRecords) {
   /** @type {Map<string, Track>} */
   const tracks = new Map();
   /** @type {Map<string, Track[]>} */
   const untagged = new Map();
-  if (!Array.isArray(trackRecords)) trackRecords = [...trackRecords];
-  adoptFolderTags(trackRecords);
-
   for (const t of trackRecords) {
     tracks.set(t.path, t);
     t._hay = undefined;
     t._dup = false;
     if (t.albumArtist) {
       t._aa = t.albumArtist;
-    } else {
-      const groupKey = dirOf(t.path) + SEP + keyOf(t.album);
-      let group = untagged.get(groupKey);
-      if (!group) untagged.set(groupKey, (group = []));
-      group.push(t);
+      continue;
     }
+    const groupKey = dirOf(t.path) + SEP + keyOf(t.album);
+    let group = untagged.get(groupKey);
+    if (!group) untagged.set(groupKey, (group = []));
+    group.push(t);
   }
   for (const group of untagged.values()) {
     const albumArtist = resolveAlbumArtist(group);
     for (const t of group) t._aa = albumArtist;
   }
+  return tracks;
+}
 
-  // Albums
+/**
+ * The albums, each with its tracks in no particular order yet; sets each
+ * track's `_albumKey`.
+ *
+ * @param {Map<string, Track>} tracks
+ * @returns {Map<string, Album>}
+ */
+function groupAlbums(tracks) {
   /** @type {Map<string, Album>} */
   const albums = new Map();
   for (const t of tracks.values()) {
@@ -319,29 +388,41 @@ export function buildLibrary(trackRecords) {
     }
     album.tracks.push(t);
   }
-  let duplicates = 0;
-  for (const album of albums.values()) {
-    duplicates += dropDuplicates(album);
-    assignDiscs(album);
-    album.tracks.sort(compareTracksInAlbum);
-    album.editionYear = mostCommon(album.tracks.map((t) => t.year));
-    album.originalYear = mostCommon(album.tracks.map((t) => t.originalYear));
-    album.year = album.originalYear ?? album.editionYear;
-    album.discCount = new Set(album.tracks.map((t) => t._disc)).size;
-    const genreNames = new Map();
-    for (const t of album.tracks) {
-      album.duration += t.duration ?? 0;
-      if (t.mtime > album.added) album.added = t.mtime;
-      for (const g of t.genres) if (!genreNames.has(keyOf(g))) genreNames.set(keyOf(g), g);
-    }
-    album.genres = [...genreNames.values()];
+  return albums;
+}
+
+/**
+ * Drops duplicate copies from an album, puts its tracks in order and works
+ * out what is said about the album as a whole: year, discs, length, genres.
+ * Returns the number of copies dropped.
+ *
+ * @param {Album} album
+ */
+function finishAlbum(album) {
+  const duplicates = dropDuplicates(album);
+  assignDiscs(album);
+  album.tracks.sort(compareTracksInAlbum);
+  album.editionYear = mostCommon(album.tracks.map((t) => t.year));
+  album.originalYear = mostCommon(album.tracks.map((t) => t.originalYear));
+  album.year = album.originalYear ?? album.editionYear;
+  album.discCount = new Set(album.tracks.map((t) => t._disc)).size;
+  const genreNames = new Map();
+  for (const t of album.tracks) {
+    album.duration += t.duration ?? 0;
+    if (t.mtime > album.added) album.added = t.mtime;
+    for (const g of t.genres) if (!genreNames.has(keyOf(g))) genreNames.set(keyOf(g), g);
   }
+  album.genres = [...genreNames.values()];
+  return duplicates;
+}
 
-  const sortedAlbums = [...albums.values()].sort(
-    (a, b) => collator.compare(sortName(a.artist), sortName(b.artist)) || compareAlbumsChronologically(a, b),
-  );
-
-  // Artists and genres, visiting tracks in album order so their track lists come out ordered.
+/**
+ * Artists and genres, visiting tracks in album order so their track lists
+ * come out ordered.
+ *
+ * @param {Album[]} sortedAlbums
+ */
+function indexArtistsAndGenres(sortedAlbums) {
   /** @type {Map<string, Artist>} */
   const artists = new Map();
   /** @type {Map<string, Genre>} */
@@ -350,37 +431,38 @@ export function buildLibrary(trackRecords) {
   const artistFor = (name) => {
     const key = keyOf(name);
     let artist = artists.get(key);
-    if (!artist) {
-      artist = { key, name, albums: [], appearsOn: [], tracks: [] };
-      artists.set(key, artist);
-    }
+    if (!artist) artists.set(key, (artist = { key, name, albums: [], appearsOn: [], tracks: [] }));
     return artist;
+  };
+  /** @type {(name: string) => Genre} */
+  const genreFor = (name) => {
+    const key = keyOf(name);
+    let genre = genres.get(key);
+    if (!genre) genres.set(key, (genre = { key, name, albums: [], tracks: [] }));
+    return genre;
   };
 
   for (const album of sortedAlbums) {
     const albumArtist = artistFor(album.artist);
     albumArtist.albums.push(album);
-    const guests = new Set();
-    const albumGenres = new Set();
+    /** @type {Set<Artist|Genre>} the guests and genres already linked to this album */
+    const linked = new Set();
+    /** @type {(entry: Artist|Genre, list: Album[], t: Track) => void} */
+    const add = (entry, list, t) => {
+      entry.tracks.push(t);
+      if (linked.has(entry)) return;
+      linked.add(entry);
+      list.push(album);
+    };
     for (const t of album.tracks) {
       albumArtist.tracks.push(t);
       if (keyOf(t.artist) !== album.artistKey) {
         const guest = artistFor(t.artist);
-        guest.tracks.push(t);
-        if (!guests.has(guest)) {
-          guests.add(guest);
-          guest.appearsOn.push(album);
-        }
+        add(guest, guest.appearsOn, t);
       }
       for (const name of t.genres) {
-        const key = keyOf(name);
-        let genre = genres.get(key);
-        if (!genre) genres.set(key, (genre = { key, name, albums: [], tracks: [] }));
-        genre.tracks.push(t);
-        if (!albumGenres.has(genre)) {
-          albumGenres.add(genre);
-          genre.albums.push(album);
-        }
+        const genre = genreFor(name);
+        add(genre, genre.albums, t);
       }
     }
   }
@@ -388,33 +470,7 @@ export function buildLibrary(trackRecords) {
     artist.albums.sort(compareAlbumsChronologically);
     artist.appearsOn.sort(compareAlbumsChronologically);
   }
-
-  const lib = {
-    /** Every known file, including duplicate copies that the lenses leave out. */
-    tracks,
-    /** Number of distinct songs: what the lenses show. */
-    songCount: tracks.size - duplicates,
-    duplicates,
-    albums,
-    artists,
-    genres,
-    sortedAlbums,
-    /** The Artists lens lists album artists; guest-only artists are reachable through search. */
-    sortedArtists: [...artists.values()]
-      .filter((a) => a.albums.length > 0)
-      .sort((a, b) => collator.compare(sortName(a.name), sortName(b.name))),
-    sortedGenres: [...genres.values()].sort((a, b) => collator.compare(a.name, b.name)),
-    /** @type {Track[]|null} */
-    _sortedTracks: null,
-    /** All tracks by title. Sorted on first use, since many sessions never open the Songs view. */
-    get sortedTracks() {
-      this._sortedTracks ??= [...tracks.values()].filter((t) => !t._dup).sort(
-        (a, b) => collator.compare(a.title, b.title) || collator.compare(a.artist, b.artist),
-      );
-      return this._sortedTracks;
-    },
-  };
-  return lib;
+  return { artists, genres };
 }
 
 export function emptyLibrary() {
