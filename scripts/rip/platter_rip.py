@@ -621,13 +621,15 @@ def lookup_releases(toc, log=print, waits=MB_RETRY_WAITS):
 # CDDB protocol over HTTP; its entries have titles, year and genre but no
 # cover art or MusicBrainz IDs.
 #
-# GnuDB wants an email address in every request ("hello=emailname+emailhost
-# +application+version", https://gnudb.org/howto.php) and answers anonymous
-# ones with an error dressed up as a match. So it is only asked when the user
-# has put their address in the config file as "gnudb_email".
+# GnuDB wants an email address and a descriptive application name and
+# version in every request ("hello=emailname+emailhost+application+version",
+# https://gnudb.org/howtognudb.php); short or generic names get blocked, and
+# an application not registered with info@gnudb.org may be refused. A refusal
+# comes as an error dressed up as a match (see _refused). GnuDB is only asked
+# when the user has put their address in the config file as "gnudb_email".
 
 GNUDB_URL = 'https://gnudb.gnudb.org/~cddb/cddb.cgi'
-GNUDB_CLIENT = 'platter-rip 1.0'
+GNUDB_CLIENT = 'PlatterCDRipper v1.0.0'
 
 
 def gnudb_hello(config):
@@ -649,6 +651,24 @@ def cddb_query_command(toc):
     offsets = ' '.join(str(lba + 150) for _, lba in toc.tracks)
     return (f'cddb query {toc.cddb_id():08x} {len(toc.tracks)} {offsets} '
             f'{(toc.leadout + 150) // 75}')
+
+
+def _refused(lines):
+    """GnuDB's refusal, if these lines are one, else None.
+
+    GnuDB refuses a request it does not accept, query or read alike, with a
+    "match" whose title is an error: "210 Found exact matches ..." followed by
+    "data 3509526 500 Unknown application / developer email ...".
+    """
+    for line in lines[1:]:
+        if line.strip() == '.':
+            break
+        if line.startswith('#') or re.match(r'[A-Z]+\d*=', line):   # xmcd entry lines
+            continue
+        m = re.match(r'\S+ \S+ ([45]\d\d .*)', line)
+        if m:
+            return m.group(1).strip()
+    return None
 
 
 def _cddb_match(text):
@@ -673,11 +693,8 @@ def parse_cddb_query(lines):
         return [], []
     else:
         raise Unavailable(f'GnuDB answered {lines[0].strip()!r}')
-    # GnuDB refuses a request it does not accept with a "match" whose title is
-    # an error: "data 3509526 500 Unknown application / developer email ...".
-    for _, _, title in found:
-        if re.match(r'[45]\d\d ', title):
-            raise Unavailable(f'GnuDB refused: {title.strip()}')
+    if refusal := _refused(lines[:1] + [f'{c} {d} {t}' for c, d, t in found]):
+        raise Unavailable(f'GnuDB refused: {refusal}')
     return (found, []) if code != '211' else ([], found)
 
 
@@ -688,6 +705,8 @@ def parse_xmcd(lines):
     """`cddb read` response (an xmcd entry) -> {KEY: value}; a repeated key continues its value."""
     if not lines or not lines[0].startswith('210'):
         raise Unavailable(f'GnuDB answered {lines[0] if lines else "nothing"!r}')
+    if refusal := _refused(lines):
+        raise Unavailable(f'GnuDB refused: {refusal}')
     entry = {}
     for line in lines[1:]:
         if line.strip() == '.':
@@ -696,6 +715,8 @@ def parse_xmcd(lines):
             continue
         key, value = line.split('=', 1)
         entry[key] = entry.get(key, '') + value
+    if 'DTITLE' not in entry:
+        raise Unavailable(f'GnuDB sent no disc entry: {lines[0].strip()!r}')
     unescape = lambda v: re.sub(r'\\([nt\\])', lambda m: _XMCD_ESCAPES[m.group(1)], v)  # noqa: E731
     return {k: unescape(v) for k, v in entry.items()}
 
