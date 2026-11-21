@@ -50,6 +50,13 @@ class TocTest(unittest.TestCase):
         # The ID MusicBrainz knows this disc by.
         self.assertEqual(self.toc.musicbrainz_id(), 'BUa_KzRqd.T8ns2TNwNV_owbDKI-')
 
+    def test_musicbrainz_submit_url(self):
+        url = self.toc.musicbrainz_submit_url()
+        self.assertTrue(url.startswith('https://musicbrainz.org/cdtoc/attach?'))
+        self.assertIn('id=BUa_KzRqd.T8ns2TNwNV_owbDKI-', url)
+        self.assertIn('tracks=9', url)
+        self.assertIn('toc=1+9+192633+183+', url)    # lead-out and offsets + 150 frames
+
     def test_accuraterip_url(self):
         # The database file AccurateRip serves for this disc.
         self.assertTrue(self.toc.accuraterip_url().startswith('http://www.accuraterip.com/accuraterip/'))
@@ -444,8 +451,34 @@ class LookupTest(unittest.TestCase):
         found = pr.find_releases(self.toc, self.logs.append, unknown_ok, call(mb), call(gnudb))
         return found, len(calls)
 
+    def mb_release(self, rid, this_disc=True):
+        """A MusicBrainz release; this_disc=False: found by similar timings, not by disc ID."""
+        ids = [self.toc.musicbrainz_id()] if this_disc else ['someOtherDisc-']
+        return {'id': rid, 'media': [{'position': 1, 'discs': [{'id': d} for d in ids]}]}
+
     def test_musicbrainz_answer_is_used(self):
-        self.assertEqual(self.find(['mb'], ['gnu']), (['mb'], 1))
+        mb = [self.mb_release('mb')]
+        self.assertEqual(self.find(mb, ['gnu']), (mb, 1))
+
+    def test_similar_timings_are_marked_and_gnudb_is_asked(self):
+        similar = self.mb_release('fuzzy', this_disc=False)
+        found, calls = self.find([similar], ['gnu'])
+        self.assertEqual(calls, 2)
+        self.assertEqual(found, ['gnu', dict(similar, similar=True)])  # an exact entry first
+        self.assertTrue(any('similar' in line for line in self.logs))
+        found, _ = self.find([similar], [])
+        self.assertEqual(found, [dict(similar, similar=True)])
+        self.assertNotIn('similar', similar)                            # the answer is not changed
+
+    def test_pick_release(self):
+        exact, fuzzy = self.mb_release('exact'), dict(self.mb_release('fuzzy', False), similar=True)
+        self.assertIs(pr.pick_release([fuzzy, exact]), exact)
+        self.assertIsNone(pr.pick_release([fuzzy]))       # similar timings are never used unasked
+        self.assertIs(pr.pick_release([fuzzy], '1'), fuzzy)
+        self.assertIs(pr.pick_release([exact, fuzzy], 'fuzzy'), fuzzy)
+        for bad in ('3', 'nope'):
+            with self.assertRaises(SystemExit):
+                pr.pick_release([exact, fuzzy], bad)
 
     def test_gnudb_when_musicbrainz_is_down(self):
         found, _ = self.find(pr.Unavailable('HTTP 503'), ['gnu'])

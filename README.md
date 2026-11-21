@@ -225,6 +225,14 @@ What it does:
   is used; pick another with `--release N`. For a multi-disc set the disc is
   recognised by its ID; when MusicBrainz cannot tell (it says so), give
   `--disc N`.
+- **Only exact matches are used unasked.** When MusicBrainz does not know the
+  disc's ID it offers releases with similar track timings. Those may be
+  another pressing of the album, or a different album altogether, so they are
+  listed, marked "similar timings only", and GnuDB is asked for an exact
+  match. If there is none, **nothing is ripped**: check the listed releases
+  and rip with `--release N` if one is right, or give `--artist` and
+  `--album`. Whenever MusicBrainz lacks the disc's ID, the ripper prints a
+  link for adding it there, so the next rip of that CD is recognised.
 - **When MusicBrainz is busy or down** (HTTP 503, 429, other 5xx, no
   network), the lookup is retried for about two minutes. If MusicBrainz still
   cannot answer, the disc is looked up in [GnuDB](https://gnudb.org/) (the
