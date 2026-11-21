@@ -214,13 +214,29 @@ What it does:
   vouch for is read a second time and every chunk that differs is re-read
   until two reads agree. The summary says which tracks are accurate, which
   were only compared, and which may have errors.
+- **Gives up on a damaged disc.** Each track may take about as long as it
+  plays (at least 2 minutes) before the ripper stops re-reading it, keeps the
+  best reads it has and marks it "MAY HAVE ERRORS (damaged: gave up…)". A
+  scratched disc then takes minutes per track, not hours. `--patience 3`
+  allows three times as long; `--patience 0` never gives up.
 - **Tags and cover from MusicBrainz.** Artist, album, titles, track and disc
   numbers, date, genre, label and MusicBrainz IDs, plus `cover.jpg` from the
   Cover Art Archive. If several releases match, they are listed and the first
   is used; pick another with `--release N`. For a multi-disc set the disc is
   recognised by its ID; when MusicBrainz cannot tell (it says so), give
-  `--disc N`. A disc MusicBrainz does not know
-  becomes "Track 01…"; give `--artist` and `--album` for the folder and tags.
+  `--disc N`.
+- **When MusicBrainz is busy or down** (HTTP 503, 429, other 5xx, no
+  network), the lookup is retried for about two minutes. If MusicBrainz still
+  cannot answer, the disc is looked up in [GnuDB](https://gnudb.org/) (the
+  freedb successor: titles, year and genre, but no cover art or MusicBrainz
+  IDs). If GnuDB does not know it either, **nothing is ripped**: try again
+  later, or give `--artist` and `--album` to rip it with numbered tracks
+  anyway. GnuDB only answers requests that carry an email address, so it is
+  asked only once you put yours in `~/.config/platter-rip.json` as
+  `"gnudb_email": "you@example.com"`; without it, a MusicBrainz outage
+  simply stops the rip.
+- A disc no database knows becomes "Track 01…"; give `--artist` and
+  `--album` for the folder and tags.
 - **Files:** `<Album artist>/<Album>/NN Title.flac` (`D-NN Title.flac` on
   multi-disc releases), FLAC level 8, each checked to decode back to exactly
   the ripped audio.
@@ -233,7 +249,9 @@ What it does:
   that disc starts over. Existing files are never overwritten.
 - **What goes online:** the disc's table of contents to MusicBrainz and
   AccurateRip, and the chosen release's MusicBrainz ID to the Cover Art
-  Archive. No audio, and nothing about you.
+  Archive. GnuDB gets the table of contents and, if you set it up, your
+  `gnudb_email`, and only when MusicBrainz cannot answer. No audio, and
+  nothing else about you.
 
 Tests for the ripper: `npm run test:rip`.
 

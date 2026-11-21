@@ -250,5 +250,300 @@ class OutputTest(unittest.TestCase):
         self.assertTrue(os.path.exists(staging))  # the rip is kept
 
 
+class Clock:
+    """A fake clock that a fake drive moves forward with every read."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+class DamagedDrive(FakeDrive):
+    """FakeDrive whose sectors in [bad_from, bad_to) read differently the first
+    `noisy_reads` times each is read (forever if None). Every READ CD costs
+    `cost` seconds on `clock`; sectors in `unreadable` fail."""
+
+    def __init__(self, sectors, bad_from, bad_to, clock, noisy_reads=None, cost=0.1,
+                 unreadable=()):
+        super().__init__(sectors)
+        self.bad = range(bad_from, bad_to)
+        self.clock, self.noisy_reads, self.cost = clock, noisy_reads, cost
+        self.unreadable = set(unreadable)
+        self.reads_of = {}
+        self.calls = []
+        self.rng = random.Random(7)
+
+    def read_cd(self, lba, count):
+        self.clock.now += self.cost
+        self.calls.append((lba, count))
+        if any(s in self.unreadable for s in range(lba, lba + count)):
+            raise pr.ScsiError('read')
+        out = bytearray(super().read_cd(lba, count))
+        for s in range(lba, lba + count):
+            if s in self.bad:
+                n = self.reads_of[s] = self.reads_of.get(s, 0) + 1
+                if self.noisy_reads is None or n <= self.noisy_reads:
+                    k = (s - lba) * pr.SECTOR
+                    out[k:k + 4] = self.rng.getrandbits(32).to_bytes(4, 'little')
+        return bytes(out)
+
+
+class DamagedDiscTest(unittest.TestCase):
+    """A damaged disc must not keep the ripper busy for hours."""
+
+    def setUp(self):
+        from unittest import mock
+        self.toc = pr.Toc([(1, 0), (2, 3000)], 6000)    # 40 s tracks
+        self.clock = Clock()
+        self.logs = []
+        patcher = mock.patch.object(pr.time, 'sleep', lambda s: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def verify(self, drive, patience):
+        reader = pr.Reader(drive, self.toc, 0, patience=patience, clock=self.clock)
+        raw, window = reader.read_track(0)
+        return reader, reader.verify_track(0, raw, window, self.logs.append)
+
+    def flushes(self, drive):
+        """How many times the cache was flushed (reads of the far end of the disc)."""
+        return sum(1 for lba, _ in drive.calls if lba == 4000)
+
+    def test_one_cache_flush_per_round_not_per_chunk(self):
+        # 20 chunks read differently twice, then the same: settled in the second round.
+        drive = DamagedDrive(6000, 260, 780, self.clock, noisy_reads=2)
+        _, v = self.verify(drive, patience=0)
+        self.assertEqual((v.differing, v.uncertain, v.gave_up), (20, 0, False))
+        self.assertEqual(self.flushes(drive), 2)
+        start, end = self.toc.span(0)
+        expected = FakeDrive(6000).read_cd(start, end - start)
+        self.assertEqual(v.raw, expected)
+
+    def test_gives_up_when_the_track_is_out_of_time(self):
+        # The whole track differs on every read, as on the Jarre disc.
+        drive = DamagedDrive(6000, 0, 3000, self.clock, cost=0.2)
+        reader, v = self.verify(drive, patience=1)
+        self.assertTrue(v.gave_up)
+        self.assertGreater(v.uncertain, 0)
+        budget = pr.MIN_TRACK_BUDGET                        # the 40 s track gets the minimum
+        self.assertLess(self.clock.now, budget + 2)        # stops within a read or two of it
+        self.assertEqual(len(v.raw), 3000 * pr.SECTOR)
+        self.assertTrue(any('out of time' in line for line in self.logs))
+
+    def test_patience_zero_never_gives_up(self):
+        drive = DamagedDrive(6000, 0, 3000, self.clock, cost=0.2)
+        _, v = self.verify(drive, patience=0)
+        self.assertFalse(v.gave_up)
+        self.assertEqual(self.flushes(drive), pr.REREAD_ROUNDS)
+
+    def test_unsettled_chunk_keeps_the_first_read_on_a_tie(self):
+        drive = DamagedDrive(6000, 26, 52, self.clock)     # one chunk, always noisy
+        reader = pr.Reader(drive, self.toc, 0, patience=0, clock=self.clock)
+        raw, window = reader.read_track(0)
+        v = reader.verify_track(0, raw, window, self.logs.append)
+        self.assertEqual(v.uncertain, 1)
+        self.assertEqual(v.raw[26 * pr.SECTOR:52 * pr.SECTOR], raw[26 * pr.SECTOR:52 * pr.SECTOR])
+
+    def test_no_second_read_when_the_first_used_up_the_time(self):
+        drive = DamagedDrive(6000, 0, 0, self.clock, cost=10)  # very slow, not damaged
+        reader = pr.Reader(drive, self.toc, 0, patience=1, clock=self.clock)
+        raw, window = reader.read_track(0)
+        calls = len(drive.calls)
+        v = reader.verify_track(0, raw, window, self.logs.append)
+        self.assertTrue(v.gave_up)
+        self.assertEqual(len(drive.calls), calls)
+        self.assertEqual(v.raw, raw)
+
+    def test_unreadable_chunk_out_of_time_is_not_read_sector_by_sector(self):
+        drive = DamagedDrive(6000, 0, 0, self.clock, unreadable={30})
+        reader = pr.Reader(drive, self.toc, 0, patience=1, clock=self.clock)
+        reader.deadline = -1                                # already out of time
+        data = reader._read_chunk(26, 26)
+        self.assertEqual(data, bytes(26 * pr.SECTOR))
+        self.assertEqual(reader.unreadable, 26)
+        self.assertEqual(len(drive.calls), 1)
+        # In time: retried, then sector by sector, so only the bad sector is lost.
+        drive.calls.clear()
+        reader.deadline, reader.unreadable = None, 0
+        data = reader._read_chunk(26, 26)
+        self.assertEqual(reader.unreadable, 1)
+        self.assertEqual(len(drive.calls), pr.CHUNK_ATTEMPTS + 26)
+        self.assertEqual(data[:4 * pr.SECTOR], FakeDrive(6000).read_cd(26, 4))
+
+
+def http_error(code, retry_after=None):
+    import urllib.error
+    return urllib.error.HTTPError('https://example', code, 'Busy',
+                                  {'Retry-After': retry_after} if retry_after else {}, None)
+
+
+class LookupTest(unittest.TestCase):
+    """MusicBrainz busy: retry, then GnuDB, and never rip as "Unknown" by accident."""
+
+    def setUp(self):
+        from unittest import mock
+        self.toc = pr.parse_toc(KITARO_TOC)
+        self.logs = []
+        self.sleeps = []
+        patcher = mock.patch.object(pr.time, 'sleep', self.sleeps.append)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def answers(self, *results):
+        """A request() that raises or returns each of `results` in turn."""
+        it = iter(results)
+
+        def request():
+            r = next(it)
+            if isinstance(r, Exception):
+                raise r
+            return r
+        return request
+
+    def test_retries_while_busy_then_succeeds(self):
+        request = self.answers(http_error(503), http_error(429, '40'), {'releases': [1]})
+        self.assertEqual(pr._retrying('MusicBrainz', request, (5, 15, 30), self.logs.append),
+                         {'releases': [1]})
+        self.assertEqual(self.sleeps, [5, 40])              # Retry-After asked for longer
+        self.assertIn('HTTP 503', self.logs[0])
+
+    def test_unavailable_when_retries_run_out(self):
+        request = self.answers(*[http_error(503)] * 3)
+        with self.assertRaises(pr.Unavailable):
+            pr._retrying('MusicBrainz', request, (5, 15), self.logs.append)
+        self.assertEqual(self.sleeps, [5, 15])
+
+    def test_network_errors_are_retried_and_other_http_errors_are_not(self):
+        import urllib.error
+        request = self.answers(urllib.error.URLError('no route'), 'ok')
+        self.assertEqual(pr._retrying('X', request, (1,), self.logs.append), 'ok')
+        with self.assertRaises(urllib.error.HTTPError):
+            pr._retrying('X', self.answers(http_error(403)), (1,), self.logs.append)
+
+    def test_musicbrainz_lookup(self):
+        from unittest import mock
+        with mock.patch.object(pr, 'musicbrainz', side_effect=http_error(404)):
+            self.assertEqual(pr.lookup_releases(self.toc, self.logs.append), [])
+        with mock.patch.object(pr, 'musicbrainz', side_effect=http_error(503)):
+            with self.assertRaises(pr.Unavailable):
+                pr.lookup_releases(self.toc, self.logs.append, waits=(1, 1))
+        with mock.patch.object(pr, 'musicbrainz', side_effect=[http_error(503), {'releases': ['r']}]):
+            self.assertEqual(pr.lookup_releases(self.toc, self.logs.append), ['r'])
+
+    def find(self, mb, gnudb, unknown_ok=False):
+        def call(result):
+            def lookup(toc, log):
+                calls.append(result)
+                if isinstance(result, Exception):
+                    raise result
+                return result
+            return lookup
+        calls = []
+        found = pr.find_releases(self.toc, self.logs.append, unknown_ok, call(mb), call(gnudb))
+        return found, len(calls)
+
+    def test_musicbrainz_answer_is_used(self):
+        self.assertEqual(self.find(['mb'], ['gnu']), (['mb'], 1))
+
+    def test_gnudb_when_musicbrainz_is_down(self):
+        found, _ = self.find(pr.Unavailable('HTTP 503'), ['gnu'])
+        self.assertEqual(found, ['gnu'])
+        self.assertTrue(any('no cover art' in line for line in self.logs))
+
+    def test_gnudb_when_musicbrainz_does_not_know_the_disc(self):
+        self.assertEqual(self.find([], ['gnu']), (['gnu'], 2))
+
+    def test_does_not_rip_unknown_when_musicbrainz_is_down(self):
+        for gnudb in ([], pr.Unavailable('HTTP 503')):
+            with self.assertRaises(SystemExit) as e:
+                self.find(pr.Unavailable('HTTP 503'), gnudb)
+            self.assertIn('Not ripping', str(e.exception))
+
+    def test_artist_and_album_given_rips_anyway(self):
+        self.assertEqual(self.find(pr.Unavailable('HTTP 503'), [], unknown_ok=True), ([], 2))
+
+    def test_unknown_disc_is_still_ripped_when_both_answered(self):
+        self.assertEqual(self.find([], []), ([], 2))
+        self.assertEqual(self.find([], pr.Unavailable('down')), ([], 2))
+
+
+class GnuDBTest(unittest.TestCase):
+    def setUp(self):
+        self.toc = pr.parse_toc(KITARO_TOC)
+
+    def test_query_command(self):
+        cmd = pr.cddb_query_command(self.toc)
+        parts = cmd.split()
+        self.assertEqual(parts[:4], ['cddb', 'query', f'{self.toc.cddb_id():08x}', '9'])
+        self.assertEqual(parts[4], '183')                      # 33 + 150
+        self.assertEqual(int(parts[-1]), (self.toc.leadout + 150) // 75)
+
+    def test_parse_query(self):
+        self.assertEqual(pr.parse_cddb_query(['200 newage 7a0a6f09 Kitaro / Tunhuang']),
+                         ([('newage', '7a0a6f09', 'Kitaro / Tunhuang')], []))
+        lines = ['210 Found exact matches, list follows (until terminating `.\')',
+                 'newage 7a0a6f09 Kitaro / Tunhuang', 'misc 7a0a6f09 Kitaro / Tun Huang', '.']
+        exact, inexact = pr.parse_cddb_query(lines)
+        self.assertEqual([m[0] for m in exact], ['newage', 'misc'])
+        self.assertEqual(inexact, [])
+        exact, inexact = pr.parse_cddb_query(['211 close matches', 'rock 12345678 X / Y', '.'])
+        self.assertEqual((exact, len(inexact)), ([], 1))
+        self.assertEqual(pr.parse_cddb_query(['202 No match found']), ([], []))
+        with self.assertRaises(pr.Unavailable):
+            pr.parse_cddb_query(['403 Database entry is corrupt'])
+
+    def entry(self, dtitle, titles, **extra):
+        lines = ['210 newage 7a0a6f09 CD database entry follows (until terminating `.\')',
+                 '# xmcd', '#', 'DISCID=7a0a6f09', f'DTITLE={dtitle}']
+        lines += [f'{k}={v}' for k, v in extra.items()]
+        lines += [f'TTITLE{i}={t}' for i, t in enumerate(titles)]
+        return lines + ['EXTD=', '.']
+
+    def test_xmcd_to_tags(self):
+        titles = ['Silk Road', 'Fata Morgana', 'Dunhuang / Mogao'] + [f'Song {i}' for i in range(4, 10)]
+        lines = self.entry('Kitaro / Tunhuang', titles, DYEAR='1996', DGENRE='New Age')
+        lines.insert(-2, 'TTITLE8=, continued')                # a long title goes on the next line
+        entry = pr.parse_xmcd(lines)
+        self.assertEqual(entry['TTITLE8'], 'Song 9, continued')
+        release = pr.xmcd_release(entry, 'newage', '7a0a6f09', self.toc)
+        album, tracks = pr.release_metadata(release, self.toc)
+        self.assertEqual((album['ALBUMARTIST'], album['ALBUM']), ('Kitaro', 'Tunhuang'))
+        self.assertEqual((album['DATE'], album['GENRE']), ('1996', 'New Age'))
+        self.assertEqual(album['MUSICBRAINZ_ALBUMID'], '')       # not a MusicBrainz release
+        self.assertEqual(tracks[2]['TITLE'], 'Dunhuang / Mogao')  # not split: one artist
+        self.assertEqual(tracks[2]['ARTIST'], 'Kitaro')
+        self.assertEqual(release['id'], 'gnudb:newage/7a0a6f09')
+
+    def test_various_artists_titles_are_split(self):
+        titles = [f'Artist {i} / Song {i}' for i in range(9)]
+        entry = pr.parse_xmcd(self.entry('Various / Sampler', titles))
+        _, tracks = pr.release_metadata(pr.xmcd_release(entry, 'misc', 'x', self.toc), self.toc)
+        self.assertEqual((tracks[3]['ARTIST'], tracks[3]['TITLE']), ('Artist 3', 'Song 3'))
+
+    def test_hello_needs_an_email_address(self):
+        self.assertEqual(pr.gnudb_hello({'gnudb_email': 'me@example.org'}),
+                         f'me example.org {pr.GNUDB_CLIENT}')
+        for config in ({}, {'gnudb_email': ''}, {'gnudb_email': 'me'}, {'gnudb_email': 'a b@c'}):
+            self.assertIsNone(pr.gnudb_hello(config), config)
+        with self.assertRaises(pr.Unavailable) as e:
+            pr.lookup_gnudb(self.toc, hello=None)
+        self.assertIn('gnudb_email', str(e.exception))
+
+    def test_refusal_dressed_as_a_match(self):
+        # What GnuDB really answers to a hello it does not accept.
+        lines = ["210 Found exact matches, list follows (until terminating `.')",
+                 'data 3509526 500 Unknown application / developer email for platter-rip 1.0 '
+                 'see https://gnudb.org/howtognudb.php', '.']
+        with self.assertRaises(pr.Unavailable) as e:
+            pr.parse_cddb_query(lines)
+        self.assertIn('Unknown application', str(e.exception))
+
+    def test_escapes(self):
+        entry = pr.parse_xmcd(self.entry('A / B', [], EXTD='line1\\nline2 back\\\\slash'))
+        self.assertEqual(entry['EXTD'], 'line1\nline2 back\\slash')
+
+
 if __name__ == '__main__':
     unittest.main()
