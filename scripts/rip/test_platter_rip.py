@@ -480,6 +480,13 @@ class LookupTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 pr.pick_release([exact, fuzzy], bad)
 
+    def test_own_tags_win_over_any_release(self):
+        exact = self.mb_release('exact')
+        self.assertIsNone(pr.pick_release([exact], own_tags=True))
+        with self.assertRaises(SystemExit) as e:     # refused before the drive is touched
+            pr.main(['--release', '1', '--artist', 'A', '--album', 'B'])
+        self.assertIn('not both', str(e.exception))
+
     def test_gnudb_when_musicbrainz_is_down(self):
         found, _ = self.find(pr.Unavailable('HTTP 503'), ['gnu'])
         self.assertEqual(found, ['gnu'])

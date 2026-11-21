@@ -245,6 +245,9 @@ What it does:
   simply stops the rip.
 - A disc no database knows becomes "Track 01…"; give `--artist` and
   `--album` for the folder and tags.
+- **`--artist` / `--album` always win.** Given either, the rip is tagged with
+  them (tracks numbered) even when a database knows the disc; what the
+  databases found is still listed. They cannot be combined with `--release`.
 - **Files:** `<Album artist>/<Album>/NN Title.flac` (`D-NN Title.flac` on
   multi-disc releases), FLAC level 8, each checked to decode back to exactly
   the ripped audio.

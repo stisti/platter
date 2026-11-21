@@ -804,9 +804,12 @@ def find_releases(toc, log, unknown_ok=False, mb=lookup_releases, gnudb=lookup_g
     return similar
 
 
-def pick_release(releases, pick=None):
+def pick_release(releases, pick=None, own_tags=False):
     """The release to tag the rip from: `pick` (--release: list number or ID), else the first
-    that is known to be this disc. None when every one only has similar timings."""
+    that is known to be this disc. None when every one only has similar timings, or when the
+    user gave their own tags (--artist/--album), which always win."""
+    if own_tags:
+        return None
     if pick:
         release = (releases[int(pick) - 1] if pick.isdigit() and 0 < int(pick) <= len(releases)
                    else next((r for r in releases if r['id'] == pick), None))
@@ -1076,15 +1079,20 @@ def main(argv=None):
     ap.add_argument('--release', help='which MusicBrainz release to use: number from the list, or its ID')
     ap.add_argument('--disc', type=int, metavar='N',
                     help='which disc of a multi-disc release this is (default: work it out)')
-    ap.add_argument('--artist', help='album artist if no database knows the disc (with --album, '
+    ap.add_argument('--artist', help='album artist: tag the rip with this and --album, numbered '
+                                     'tracks, instead of what the databases say (with --album, '
                                      'also rips when MusicBrainz is down)')
-    ap.add_argument('--album', help='album title if no database knows the disc')
+    ap.add_argument('--album', help='album title (see --artist)')
     ap.add_argument('--info', action='store_true', help='look the disc up and stop (no ripping)')
     ap.add_argument('--no-eject', action='store_true', help='leave the disc in when done')
     ap.add_argument('--patience', type=float, default=1.0, metavar='X',
                     help='how long to keep re-reading a damaged track: X times its playing time '
                          f'(at least {MIN_TRACK_BUDGET // 60} min × X); 0 = never give up (default: 1)')
     args = ap.parse_args(argv)
+    own_tags = bool(args.artist or args.album)
+    if own_tags and args.release:
+        raise SystemExit('Give either --release (tags from that release) or --artist/--album '
+                         '(your own tags), not both.')
 
     def log(msg=''):
         print(msg, flush=True)
@@ -1132,8 +1140,10 @@ def main(argv=None):
         for n, r in enumerate(releases, 1):
             log(f'  {n}. {describe_release(r)}  [{r["id"]}]'
                 + ('  (MusicBrainz: similar timings only)' if r.get('similar') else ''))
-        release = pick_release(releases, args.release)
-        if release is None and not (args.artist and args.album):
+        release = pick_release(releases, args.release, own_tags)
+        if own_tags:
+            log('Not using these: tagging with --artist/--album instead.')
+        elif release is None:
             msg = ('Not ripping: MusicBrainz does not know this disc, and the releases above '
                    'only have similar track timings, so they may be another album. Check them '
                    '(for example by their track lengths on musicbrainz.org) and rip with '
