@@ -8,11 +8,13 @@ the drive through it directly (the SG_IO ioctl, version 4 interface).
 
 What it does, per disc:
   1. reads the table of contents, works out the MusicBrainz and AccurateRip
-     disc IDs, and looks the disc up in both;
+     disc IDs, and looks the disc up in both (MusicBrainz is retried while
+     busy, then GnuDB is asked; if neither can say what the disc is, it
+     stops here rather than rip an "Unknown Album");
   2. reads every audio track, corrected for the drive's read offset;
   3. checks each track against AccurateRip; a track that cannot be verified
      there is read a second time and any differing chunks re-read until the
-     reads agree;
+     reads agree, or until the track's time (--patience) is up;
   4. writes FLAC files tagged from MusicBrainz, plus cover.jpg, into a
      staging folder on the Chromebook's own disk;
   5. when every track is done, copies the album to
@@ -51,6 +53,9 @@ import soundfile
 SECTOR = 2352                 # bytes of audio per CD sector
 SAMPLES_PER_SECTOR = 588      # stereo 16-bit samples per sector
 CHUNK = 26                    # sectors per READ CD (61 KB, under the 64 KB limit)
+CHUNK_ATTEMPTS = 3            # tries per chunk before going sector by sector
+REREAD_ROUNDS = 10            # most rounds of re-reading chunks that differ
+MIN_TRACK_BUDGET = 120        # seconds; a track may take max(this, its length) × --patience
 USER_AGENT = 'platter-rip/1.0 ( audio CD ripper )'
 MUSIC_DIR_ENV = 'PLATTER_MUSIC_DIR'
 STAGING_ROOT = os.path.join(os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~/.cache'),
@@ -362,31 +367,55 @@ def find_offset_candidates(raw, base, length, wanted, search):
 # Reading audio
 
 class Reader:
-    """Reads offset-corrected PCM, re-reading where reads disagree."""
+    """Reads offset-corrected PCM, re-reading where reads disagree.
 
-    def __init__(self, drive, toc, offset):
+    Each track gets a time budget (`patience` times its playing time, at least
+    MIN_TRACK_BUDGET seconds). A damaged disc can make every chunk come back
+    different on every read; once the budget is spent the reader stops
+    re-reading, keeps the best reads it has and says it gave up, instead of
+    grinding for hours. patience=0 never gives up.
+    """
+
+    def __init__(self, drive, toc, offset, patience=1.0, clock=time.monotonic):
         self.drive = drive
         self.toc = toc
         self.offset = offset          # samples, AccurateRip convention
         self.disc_end = toc.leadout   # can't read past the audio lead-out
         self.unreadable = 0
+        self.patience = patience
+        self.clock = clock
+        self.deadline = None          # clock() value after which a track gives up
+
+    def track_budget(self, i):
+        """Seconds a track may take, or None for no limit."""
+        if not self.patience:
+            return None
+        start, end = self.toc.span(i)
+        return self.patience * max(MIN_TRACK_BUDGET, (end - start) / 75)
+
+    def out_of_time(self):
+        return self.deadline is not None and self.clock() > self.deadline
 
     def _read_chunk(self, lba, count):
-        for attempt in range(5):
+        attempts = 1 if self.out_of_time() else CHUNK_ATTEMPTS
+        for attempt in range(attempts):
             try:
                 return self.drive.read_cd(lba, count)
             except ScsiError:
-                if attempt == 4:
-                    break
-                time.sleep(0.5)
-        # Sector by sector, so one bad sector costs only itself.
+                if attempt + 1 < attempts:
+                    time.sleep(0.5)
+        # Sector by sector, so one bad sector costs only itself -- unless the
+        # track is out of time, when the whole chunk counts as unreadable.
         out = bytearray()
         for s in range(lba, lba + count):
-            try:
-                out += self.drive.read_cd(s, 1)
-            except ScsiError:
-                out += bytes(SECTOR)
-                self.unreadable += 1
+            if not self.out_of_time():
+                try:
+                    out += self.drive.read_cd(s, 1)
+                    continue
+                except ScsiError:
+                    pass
+            out += bytes(SECTOR)
+            self.unreadable += 1
         return bytes(out)
 
     def raw_sectors(self, first, count, progress=None):
@@ -413,7 +442,10 @@ class Reader:
         return first, count, skip
 
     def read_track(self, i, progress=None):
+        """First read of track i; also starts the track's time budget."""
         self.unreadable = 0
+        budget = self.track_budget(i)
+        self.deadline = None if budget is None else self.clock() + budget
         start, end = self.toc.span(i)
         first, count, skip = self.track_window(start, end)
         raw = self.raw_sectors(first, count, progress)
@@ -434,39 +466,67 @@ class Reader:
             except ScsiError:
                 pass
 
-    def verify_track(self, i, raw, window, log):
+    def verify_track(self, i, raw, window, log, progress=None):
         """Second read of a track; re-read chunks that differ until two reads agree.
 
-        Returns (pcm, chunks that differed, chunks still uncertain).
+        Re-reading goes in rounds: one cache flush, then every chunk not yet
+        settled is read again in disc order. A chunk settles when a read
+        repeats one seen before. After REREAD_ROUNDS rounds, or when the
+        track's time is up, an unsettled chunk keeps its most frequent read
+        (the first read on a tie).
+
+        Returns a Verified.
         """
         first, count, skip = window
-        a = bytearray(raw)
-        b = self.raw_sectors(first, count)
         chunk_bytes = CHUNK * SECTOR
-        differing, uncertain = 0, 0
+        n_chunks = -(-count // CHUNK)
+        if self.out_of_time():
+            log('    out of time for this track (damaged disc?); not reading it again')
+            return Verified(raw, 0, n_chunks, True)
+        a = bytearray(raw)
+        b = self.raw_sectors(first, count, progress)
+        pending = {}                  # byte offset of a chunk -> reads of it seen so far
         for c in range(0, count * SECTOR, chunk_bytes):
-            if a[c:c + chunk_bytes] == b[c:c + chunk_bytes]:
-                continue
-            differing += 1
-            lba = first + c // SECTOR
-            n = min(CHUNK, count - c // SECTOR)
-            seen = [bytes(a[c:c + chunk_bytes]), bytes(b[c:c + chunk_bytes])]
-            settled = None
-            for _ in range(10):
-                self.flush_cache(lba)
-                again = self.raw_sectors(lba, n)
-                if again in seen:
-                    settled = again
+            if a[c:c + chunk_bytes] != b[c:c + chunk_bytes]:
+                pending[c] = [bytes(a[c:c + chunk_bytes]), bytes(b[c:c + chunk_bytes])]
+        differing = len(pending)
+        if differing:
+            log(f'    {differing} of {n_chunks} chunk(s) differed between reads; re-reading them')
+        for round_ in range(1, REREAD_ROUNDS + 1):
+            if not pending or self.out_of_time():
+                break
+            self.flush_cache(first + (min(pending) + max(pending)) // 2 // SECTOR)
+            for c in sorted(pending):
+                if self.out_of_time():
                     break
-                seen.append(again)
-            if settled is None:
-                uncertain += 1
-                settled = max(set(seen), key=seen.count)
-            a[c:c + len(settled)] = settled
+                again = self.raw_sectors(first + c // SECTOR, min(CHUNK, count - c // SECTOR))
+                seen = pending[c]
+                if again in seen:
+                    a[c:c + len(again)] = again
+                    del pending[c]
+                else:
+                    seen.append(again)
+            if pending:
+                log(f'    round {round_}: {len(pending)} chunk(s) not settled yet')
+        gave_up = bool(pending) and self.out_of_time()
+        for c, seen in pending.items():
+            best = max(seen, key=seen.count)        # max() keeps the first on a tie
+            a[c:c + len(best)] = best
         if differing:
             log(f'    {differing} chunk(s) differed between reads'
-                + (f', {uncertain} could not be settled' if uncertain else ', all settled'))
-        return bytes(a), differing, uncertain
+                + (f', {len(pending)} could not be settled' if pending else ', all settled')
+                + (' (out of time)' if gave_up else ''))
+        return Verified(bytes(a), differing, len(pending), gave_up)
+
+
+class Verified:
+    """What verify_track found: the raw sectors to use and how sure they are."""
+
+    def __init__(self, raw, differing, uncertain, gave_up):
+        self.raw = raw
+        self.differing = differing    # chunks whose first two reads differed
+        self.uncertain = uncertain    # chunks no two reads agreed on
+        self.gave_up = gave_up        # the track ran out of time
 
 
 # --------------------------------------------------------------------------
@@ -493,16 +553,234 @@ def musicbrainz(path, **params):
     return json.loads(http_get(url))
 
 
-def lookup_releases(toc):
-    """MusicBrainz releases with this disc (exact disc ID first, then by TOC)."""
+class Unavailable(Exception):
+    """A disc database could not be reached, or kept saying it is busy."""
+
+
+MB_RETRY_WAITS = (5, 15, 30, 60)   # seconds before each retry while MusicBrainz is busy
+GNUDB_RETRY_WAITS = (5, 15)
+RETRY_AFTER_MAX = 120              # longest Retry-After we honour
+
+
+def _retrying(name, request, waits, log):
+    """request(), retried after each of `waits` seconds while the service is busy or unreachable.
+
+    HTTP 429 and 5xx and network errors are retried (a Retry-After header can
+    make the wait longer); any other HTTP error is passed on. Raises
+    Unavailable when the waits are used up.
+    """
+    for attempt in range(len(waits) + 1):
+        try:
+            return request()
+        except urllib.error.HTTPError as e:
+            if e.code != 429 and e.code < 500:
+                raise
+            problem = f'HTTP {e.code}' + (f' {e.reason}' if e.reason else '')
+            try:
+                asked = float((e.headers or {}).get('Retry-After') or 0)
+            except ValueError:
+                asked = 0
+        except (urllib.error.URLError, OSError) as e:   # unreachable, timed out
+            problem, asked = str(getattr(e, 'reason', None) or e), 0
+        if attempt == len(waits):
+            raise Unavailable(f'{problem}; tried {attempt + 1} times')
+        wait = max(waits[attempt], min(asked, RETRY_AFTER_MAX))
+        log(f'{name} is unavailable ({problem}); trying again in {wait:.0f} s...')
+        time.sleep(wait)
+
+
+def lookup_releases(toc, log=print, waits=MB_RETRY_WAITS):
+    """MusicBrainz releases with this disc (exact disc ID first, then by TOC).
+
+    [] when MusicBrainz does not know the disc; Unavailable when it cannot say.
+    """
+    def request():
+        try:
+            return musicbrainz(f'discid/{toc.musicbrainz_id()}', toc=toc.musicbrainz_toc(),
+                               inc='artist-credits recordings release-groups labels genres')
+        except urllib.error.HTTPError as e:
+            if e.code in (400, 404):    # 400: MusicBrainz finds the TOC invalid
+                return {}
+            raise
     try:
-        res = musicbrainz(f'discid/{toc.musicbrainz_id()}', toc=toc.musicbrainz_toc(),
-                          inc='artist-credits recordings release-groups labels genres')
+        return _retrying('MusicBrainz', request, waits, log).get('releases', [])
     except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return []
-        raise
-    return res.get('releases', [])
+        raise Unavailable(f'HTTP {e.code}') from e
+
+
+# --------------------------------------------------------------------------
+# GnuDB (the freedb successor): a second opinion when MusicBrainz cannot answer.
+# CDDB protocol over HTTP; its entries have titles, year and genre but no
+# cover art or MusicBrainz IDs.
+#
+# GnuDB wants an email address in every request ("hello=emailname+emailhost
+# +application+version", https://gnudb.org/howto.php) and answers anonymous
+# ones with an error dressed up as a match. So it is only asked when the user
+# has put their address in the config file as "gnudb_email".
+
+GNUDB_URL = 'https://gnudb.gnudb.org/~cddb/cddb.cgi'
+GNUDB_CLIENT = 'platter-rip 1.0'
+
+
+def gnudb_hello(config):
+    """The CDDB hello for the configured email address, or None when there is none."""
+    name, at, host = str(config.get('gnudb_email') or '').strip().partition('@')
+    if not (at and name and host) or ' ' in name + host:
+        return None
+    return f'{name} {host} {GNUDB_CLIENT}'
+
+
+def cddb(cmd, hello):
+    """Response lines of one CDDB command (proto 6: UTF-8)."""
+    query = urllib.parse.urlencode({'cmd': cmd, 'hello': hello, 'proto': '6'})
+    text = http_get(f'{GNUDB_URL}?{query}').decode('utf-8', errors='replace')
+    return text.splitlines()
+
+
+def cddb_query_command(toc):
+    offsets = ' '.join(str(lba + 150) for _, lba in toc.tracks)
+    return (f'cddb query {toc.cddb_id():08x} {len(toc.tracks)} {offsets} '
+            f'{(toc.leadout + 150) // 75}')
+
+
+def _cddb_match(text):
+    cat, discid, title = (text.split(' ', 2) + ['', ''])[:3]
+    return cat, discid, title
+
+
+def parse_cddb_query(lines):
+    """`cddb query` response -> ([(category, disc id, title)] exact, [...] inexact)."""
+    if not lines:
+        raise Unavailable('GnuDB sent an empty answer')
+    code = lines[0][:3]
+    if code == '200':
+        found = [_cddb_match(lines[0][4:])]
+    elif code in ('210', '211'):
+        found = []
+        for line in lines[1:]:
+            if line.strip() == '.':
+                break
+            found.append(_cddb_match(line))
+    elif code == '202':
+        return [], []
+    else:
+        raise Unavailable(f'GnuDB answered {lines[0].strip()!r}')
+    # GnuDB refuses a request it does not accept with a "match" whose title is
+    # an error: "data 3509526 500 Unknown application / developer email ...".
+    for _, _, title in found:
+        if re.match(r'[45]\d\d ', title):
+            raise Unavailable(f'GnuDB refused: {title.strip()}')
+    return (found, []) if code != '211' else ([], found)
+
+
+_XMCD_ESCAPES = {'n': '\n', 't': '\t', '\\': '\\'}
+
+
+def parse_xmcd(lines):
+    """`cddb read` response (an xmcd entry) -> {KEY: value}; a repeated key continues its value."""
+    if not lines or not lines[0].startswith('210'):
+        raise Unavailable(f'GnuDB answered {lines[0] if lines else "nothing"!r}')
+    entry = {}
+    for line in lines[1:]:
+        if line.strip() == '.':
+            break
+        if line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        entry[key] = entry.get(key, '') + value
+    unescape = lambda v: re.sub(r'\\([nt\\])', lambda m: _XMCD_ESCAPES[m.group(1)], v)  # noqa: E731
+    return {k: unescape(v) for k, v in entry.items()}
+
+
+def _split_artist(text):
+    artist, sep, title = text.partition(' / ')
+    return (artist.strip(), title.strip()) if sep else ('', text.strip())
+
+
+def xmcd_release(entry, cat, discid, toc):
+    """A GnuDB entry in the shape of a MusicBrainz release, for release_metadata()."""
+    artist, title = _split_artist(entry.get('DTITLE', ''))
+    artist = artist or title
+    various = artist.lower() in ('various', 'various artists', 'va')
+    tracks = []
+    for i in range(len(toc.tracks)):
+        text = entry.get(f'TTITLE{i}', '').strip()
+        # "Artist / Title" only on a various-artists disc; elsewhere ' / ' is part of the title
+        t_artist, t_title = _split_artist(text) if various else ('', text)
+        tracks.append({'title': t_title,
+                       **({'artist-credit': [{'name': t_artist}]} if t_artist else {})})
+    year = entry.get('DYEAR', '').strip()
+    genre = entry.get('DGENRE', '').strip()
+    return {
+        'id': f'gnudb:{cat}/{discid}', 'source': 'GnuDB', 'title': title,
+        'artist-credit': [{'name': artist}],
+        **({'date': year} if year.isdigit() else {}),
+        **({'genres': [{'name': genre, 'count': 1}]} if genre else {}),
+        'media': [{'position': 1, 'track-count': len(toc.tracks), 'tracks': tracks}],
+    }
+
+
+def lookup_gnudb(toc, log=print, waits=GNUDB_RETRY_WAITS, hello=None):
+    """GnuDB entries that exactly match this disc, as MusicBrainz-shaped releases.
+
+    Inexact (fuzzy) matches are only mentioned: they may be another disc.
+    Raises Unavailable when GnuDB cannot say, or `hello` is None (no email set).
+    """
+    if hello is None:
+        raise Unavailable(f'not set up: it needs your email address, as "gnudb_email" in '
+                          f'{CONFIG_PATH}')
+    try:
+        exact, inexact = parse_cddb_query(
+            _retrying('GnuDB', lambda: cddb(cddb_query_command(toc), hello), waits, log))
+        if inexact and not exact:
+            log('GnuDB has only similar discs, not this one: '
+                + '; '.join(title for _, _, title in inexact[:5]))
+        releases = []
+        for cat, discid, _ in exact:
+            entry = parse_xmcd(
+                _retrying('GnuDB', lambda: cddb(f'cddb read {cat} {discid}', hello), waits, log))
+            releases.append(xmcd_release(entry, cat, discid, toc))
+        return releases
+    except urllib.error.HTTPError as e:
+        raise Unavailable(f'HTTP {e.code}') from e
+
+
+def find_releases(toc, log, unknown_ok=False, mb=lookup_releases, gnudb=lookup_gnudb):
+    """Releases this disc may be, from MusicBrainz or else GnuDB.
+
+    [] means the databases answered and none knows the disc (it is ripped as
+    "Track N"). When MusicBrainz cannot answer and GnuDB does not know the
+    disc either, this stops before anything is ripped -- unless `unknown_ok`
+    (the user gave --artist and --album).
+    """
+    try:
+        releases, mb_problem = mb(toc, log), None
+    except Unavailable as e:
+        releases, mb_problem = [], str(e)
+        log(f'MusicBrainz is unavailable ({e}).')
+    if releases:
+        return releases
+    log('Asking GnuDB instead...' if mb_problem else
+        'MusicBrainz does not know this disc; asking GnuDB...')
+    try:
+        releases, gnudb_problem = gnudb(toc, log), None
+    except Unavailable as e:
+        releases, gnudb_problem = [], str(e)
+        log(f'GnuDB is unavailable ({e}).')
+    if releases:
+        if mb_problem:
+            log('Using GnuDB, so no cover art and no MusicBrainz IDs. '
+                'Rip again when MusicBrainz is back to get those.')
+        return releases
+    if mb_problem and not unknown_ok:
+        raise SystemExit(
+            'Not ripping: MusicBrainz is unavailable and GnuDB '
+            + ('is unavailable too' if gnudb_problem else 'does not know this disc')
+            + ', so the album would be "Unknown". Try again in a while, or give --artist '
+              'and --album to rip it with numbered tracks anyway.')
+    if not gnudb_problem:
+        log('GnuDB does not know this disc either.')
+    return []
 
 
 def credit_name(credits):
@@ -553,6 +831,7 @@ def release_metadata(release, toc, disc=None):
     """Album tags and per-track tags from a MusicBrainz release."""
     choice = find_medium(release, toc, disc)
     medium = choice.medium
+    from_mb = release.get('source', 'MusicBrainz') == 'MusicBrainz'
     group = release.get('release-group', {})
     genres = sorted(release.get('genres') or group.get('genres') or [],
                     key=lambda g: -g.get('count', 0))
@@ -566,7 +845,7 @@ def release_metadata(release, toc, disc=None):
         'LABEL': labels[0].get('label', {}).get('name', '') if labels and labels[0].get('label') else '',
         'CATALOGNUMBER': labels[0].get('catalog-number', '') if labels else '',
         'BARCODE': release.get('barcode') or '',
-        'MUSICBRAINZ_ALBUMID': release.get('id', ''),
+        'MUSICBRAINZ_ALBUMID': release.get('id', '') if from_mb else '',
         'MUSICBRAINZ_RELEASEGROUPID': group.get('id', ''),
     }
     disc_total = len(release.get('media', []))
@@ -764,10 +1043,14 @@ def main(argv=None):
     ap.add_argument('--release', help='which MusicBrainz release to use: number from the list, or its ID')
     ap.add_argument('--disc', type=int, metavar='N',
                     help='which disc of a multi-disc release this is (default: work it out)')
-    ap.add_argument('--artist', help='album artist if MusicBrainz does not know the disc')
-    ap.add_argument('--album', help='album title if MusicBrainz does not know the disc')
+    ap.add_argument('--artist', help='album artist if no database knows the disc (with --album, '
+                                     'also rips when MusicBrainz is down)')
+    ap.add_argument('--album', help='album title if no database knows the disc')
     ap.add_argument('--info', action='store_true', help='look the disc up and stop (no ripping)')
     ap.add_argument('--no-eject', action='store_true', help='leave the disc in when done')
+    ap.add_argument('--patience', type=float, default=1.0, metavar='X',
+                    help='how long to keep re-reading a damaged track: X times its playing time '
+                         f'(at least {MIN_TRACK_BUDGET // 60} min × X); 0 = never give up (default: 1)')
     args = ap.parse_args(argv)
 
     def log(msg=''):
@@ -802,14 +1085,13 @@ def main(argv=None):
     log(f'AccurateRip: {len(pressings)} pressing(s) of this disc in the database'
         if pressings else 'AccurateRip: this disc is not in the database')
 
-    try:
-        releases = lookup_releases(toc)
-    except (urllib.error.URLError, OSError) as e:
-        log(f'MusicBrainz lookup failed ({e}).')
-        releases = []
+    config = load_config()
+    hello = gnudb_hello(config)
+    releases = find_releases(toc, log, unknown_ok=bool(args.artist and args.album),
+                             gnudb=lambda toc, log: lookup_gnudb(toc, log, hello=hello))
     release = None
     if releases:
-        log('MusicBrainz:')
+        log(f'{releases[0].get("source", "MusicBrainz")}:')
         for n, r in enumerate(releases, 1):
             log(f'  {n}. {describe_release(r)}  [{r["id"]}]')
         if args.release:
@@ -823,8 +1105,6 @@ def main(argv=None):
         if len(releases) > 1:
             log(f'Using {releases.index(release) + 1}' +
                 ('' if args.release else ' (choose another with --release N)'))
-    else:
-        log('MusicBrainz does not know this disc.')
 
     if release:
         choice = find_medium(release, toc, args.disc)
@@ -844,9 +1124,8 @@ def main(argv=None):
         f'Into: (no music folder: set {MUSIC_DIR_ENV} or use --dest)')
 
     # ---- read offset
-    config = load_config()
     offsets = config.setdefault('offsets', {})
-    reader = Reader(drive, toc, 0)
+    reader = Reader(drive, toc, 0, patience=args.patience)
     offset = args.offset
     if offset is None and (args.find_offset or model not in offsets):
         found = detect_offset(reader, toc, pressings, log)
@@ -884,8 +1163,9 @@ def main(argv=None):
     shutil.rmtree(staging, ignore_errors=True)       # an earlier, interrupted rip
     os.makedirs(staging)
     log(f'Ripping into {staging}; the album goes to the music folder when every track is done.')
-    if release and not any(os.path.exists(os.path.join(folder, n))
-                           for n in ('cover.jpg', 'folder.jpg', 'Folder.jpg')):
+    has_cover = any(os.path.exists(os.path.join(folder, n))
+                    for n in ('cover.jpg', 'folder.jpg', 'Folder.jpg'))
+    if release and release.get('source', 'MusicBrainz') == 'MusicBrainz' and not has_cover:
         cover = fetch_cover(release['id'])
         if cover:
             with open(os.path.join(staging, 'cover.jpg'), 'wb') as f:
@@ -904,11 +1184,14 @@ def main(argv=None):
         label = f'  Track {i + 1:2d}/{n_tracks}'
         t_start = time.time()
 
-        def progress(done, label=label, total=total, t_start=t_start):
-            speed = done / max(time.time() - t_start, 1e-6) / 176400
-            print(f'\r{label}: {min(done, total) * 100 // total:3d}%  {speed:4.1f}×', end='', flush=True)
+        def progress_from(t0, label=label, total=total):
+            def progress(done):
+                speed = done / max(time.time() - t0, 1e-6) / 176400
+                print(f'\r{label}: {min(done, total) * 100 // total:3d}%  {speed:4.1f}×',
+                      end='', flush=True)
+            return progress
 
-        raw, window = reader.read_track(i, progress)
+        raw, window = reader.read_track(i, progress_from(t_start))
         pcm = reader.track_pcm(i, raw, window)
         print('\r' + ' ' * 40 + '\r', end='')
         crcs = accuraterip_checksums(pcm, i == 0, i == n_tracks - 1)
@@ -918,16 +1201,22 @@ def main(argv=None):
         else:
             log(f'{label}: ' + ('not matched in AccurateRip' if pressings else 'no AccurateRip data')
                 + ', reading it again to compare...')
-            raw, differing, uncertain = reader.verify_track(i, raw, window, log)
+            v = reader.verify_track(i, raw, window, log, progress_from(time.time()))
+            print('\r' + ' ' * 40 + '\r', end='')
+            raw = v.raw
             pcm = reader.track_pcm(i, raw, window)
             crcs = accuraterip_checksums(pcm, i == 0, i == n_tracks - 1)
             conf = accuraterip_match(pressings, i, crcs)
             if conf:
                 status = f'accurate after re-reading (AccurateRip confidence {conf})'
-            elif uncertain or reader.unreadable:
-                status = f'MAY HAVE ERRORS ({uncertain} unsettled chunk(s), ' \
+            elif v.gave_up:
+                status = f'MAY HAVE ERRORS (damaged: gave up re-reading after ' \
+                         f'{(time.time() - t_start) / 60:.0f} min; {v.uncertain} unsettled ' \
+                         f'chunk(s), {reader.unreadable} unreadable sector(s))'
+            elif v.uncertain or reader.unreadable:
+                status = f'MAY HAVE ERRORS ({v.uncertain} unsettled chunk(s), ' \
                          f'{reader.unreadable} unreadable sector(s))'
-            elif differing:
+            elif v.differing:
                 status = 'reads differed but were settled; not verified by AccurateRip'
             else:
                 status = 'two reads identical' + (' (AccurateRip has a different pressing)'
