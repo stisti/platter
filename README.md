@@ -198,6 +198,7 @@ Then put in a disc and run:
 npm run rip                          # rips into $PLATTER_MUSIC_DIR
 npm run rip -- --dest /path/Music    # somewhere else this time
 npm run rip -- --info                # look the disc up, don't rip
+npm run rip -- --no-backup           # skip the backup command this time
 ```
 
 What it does:
@@ -261,11 +262,44 @@ What it does:
   The disc is ejected before the copy, so the next one can go in. An
   interrupted rip leaves its files only in the cache, and the next rip of
   that disc starts over. Existing files are never overwritten.
+- **Backs the new album up, if you want.** Set `"backup_command"` in
+  `~/.config/platter-rip.json` and the ripper runs it once the album is in
+  the music folder (see below).
 - **What goes online:** the disc's table of contents to MusicBrainz and
   AccurateRip, and the chosen release's MusicBrainz ID to the Cover Art
   Archive. GnuDB gets the table of contents and, if you set it up, your
   `gnudb_email`, and only when MusicBrainz cannot answer. No audio, and
   nothing else about you.
+
+### Backing up new rips
+
+The ripper can run a command of your choice on each new album, after it has
+been copied to the music folder: put it in `~/.config/platter-rip.json` as
+`backup_command`. For example, to copy the album to OneDrive with
+[rclone](https://rclone.org/) (remote `onedrive:`, music in `Musiikki`):
+
+```json
+{
+  "backup_command": "rclone copy %s onedrive:Musiikki/%r --progress"
+}
+```
+
+- In the command, `%s` becomes the album's folder
+  (`/mnt/shared/removable/tera/Music/Kitaro/Tunhuang`), `%r` the same folder
+  relative to the music folder (`Kitaro/Tunhuang`) and `%%` a plain `%`.
+  `rclone copy` copies a folder's *contents*, hence the `/%r` above: without
+  it the tracks of every album would land loose in `Musiikki`.
+- The command is split into words like a shell would (quotes work), but is
+  not run by a shell: a path with spaces or quotes is always passed as one
+  word, so no quoting is needed around `%s` or `%r`. For pipes, `&&` and the
+  like, write a script and use that as the command.
+- Its output is shown as it runs. If it fails, the ripper says so, prints the
+  command for running it again by hand, and exits with status 1; the album
+  stays in the music folder either way. If the command is not installed, the
+  ripper says so before ripping.
+- `--backup "CMD"` uses another command this time; `--no-backup` skips the
+  backup. Without a `backup_command` (and no `--backup`) nothing is backed up.
+- `--info` and `--find-offset` rip nothing, so they back nothing up.
 
 Tests for the ripper: `npm run test:rip`.
 

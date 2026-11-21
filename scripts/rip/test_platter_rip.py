@@ -601,5 +601,52 @@ class GnuDBTest(unittest.TestCase):
         self.assertEqual(entry['EXTD'], 'line1\nline2 back\\slash')
 
 
+
+class BackupTest(unittest.TestCase):
+    MUSIC = '/mnt/shared/removable/tera/Music'
+    FOLDER = MUSIC + "/Guns N' Roses/Use Your Illusion I"
+
+    def test_which_command(self):
+        config = {'backup_command': 'rclone copy %s remote:'}
+        self.assertEqual(pr.chosen_backup(config), 'rclone copy %s remote:')
+        self.assertEqual(pr.chosen_backup(config, 'other %s'), 'other %s')    # --backup wins
+        self.assertIsNone(pr.chosen_backup(config, off=True))                 # --no-backup
+        self.assertIsNone(pr.chosen_backup(config, 'other %s', off=True))
+        for none in ({}, {'backup_command': ''}, {'backup_command': '  '}, {'backup_command': None}):
+            self.assertIsNone(pr.chosen_backup(none))
+
+    def test_placeholders_become_single_arguments(self):
+        argv = pr.backup_argv('rclone copy %s onedrive:Musiikki/%r --progress',
+                              self.FOLDER, self.MUSIC)
+        self.assertEqual(argv, ['rclone', 'copy', self.FOLDER,
+                                "onedrive:Musiikki/Guns N' Roses/Use Your Illusion I", '--progress'])
+
+    def test_quotes_and_percent_signs(self):
+        argv = pr.backup_argv('"my backup" --tag=%%s --name="x %r" 50% %d', self.FOLDER, self.MUSIC + '/')
+        self.assertEqual(argv, ['my backup', '--tag=%s', "--name=x Guns N' Roses/Use Your Illusion I",
+                                '50%', '%d'])
+
+    def test_unreadable_command(self):
+        for bad in ('rclone copy "%s', '   '):
+            with self.assertRaises(SystemExit):
+                pr.backup_argv(bad, self.FOLDER, self.MUSIC)
+
+    def test_run(self):
+        logs = []
+        self.assertTrue(pr.run_backup([sys.executable, '-c', 'pass'], logs.append))
+        self.assertEqual(logs[-1], 'Backup done.')
+        self.assertFalse(pr.run_backup([sys.executable, '-c', 'raise SystemExit(3)'], logs.append))
+        self.assertIn('exit status 3', logs[-1])
+        self.assertFalse(pr.run_backup(['/no/such/backup-tool', 'x'], logs.append))
+        self.assertIn('FAILED', logs[-1])
+        self.assertIn('/no/such/backup-tool x', logs[-1])                     # how to retry
+
+    def test_backup_and_no_backup_are_exclusive(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+            pr.main(['--backup', 'true', '--no-backup'])
+
+
 if __name__ == '__main__':
     unittest.main()

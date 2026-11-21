@@ -19,7 +19,9 @@ What it does, per disc:
      staging folder on the Chromebook's own disk;
   5. when every track is done, copies the album to
      <music folder>/<Album artist>/<Album>/NN Title.flac, checks the copy,
-     and removes the staging folder.
+     and removes the staging folder;
+  6. if a backup command is set ("backup_command" in the config file, or
+     --backup), runs it on the new album folder.
 
 The music folder is $PLATTER_MUSIC_DIR, or --dest.
 
@@ -37,6 +39,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -1040,6 +1043,52 @@ def install_album(staging, folder):
 
 
 # --------------------------------------------------------------------------
+# Backup of the new album
+
+BACKUP_PLACEHOLDER = re.compile(r'%[%sr]')
+
+
+def chosen_backup(config, override=None, off=False):
+    """The backup command to run after a rip: --backup, else the config's, else None."""
+    if off:
+        return None
+    return override or str(config.get('backup_command') or '').strip() or None
+
+
+def backup_argv(command, folder, dest):
+    """The backup command as a list of arguments, for `folder` in the music folder `dest`.
+
+    The command is split into words the way a shell would (quotes work), but
+    not run by a shell. In each word %s becomes the album folder, %r the album
+    folder relative to the music folder ("Artist/Album") and %% a single %.
+    """
+    try:
+        words = shlex.split(command)
+    except ValueError as e:
+        raise SystemExit(f'Cannot read the backup command ({e}): {command}')
+    if not words:
+        raise SystemExit('The backup command is empty.')
+    values = {'%s': folder, '%r': os.path.relpath(folder, dest), '%%': '%'}
+    return [BACKUP_PLACEHOLDER.sub(lambda m: values[m.group()], w) for w in words]
+
+
+def run_backup(argv, log):
+    """Run the backup command, its output shown as it goes. True when it succeeded."""
+    log(f'Backing up: {shlex.join(argv)}')
+    try:
+        code = subprocess.run(argv).returncode
+        why = f'exit status {code}'
+    except OSError as e:
+        code, why = None, str(e)
+    if code == 0:
+        log('Backup done.')
+        return True
+    log(f'Backup FAILED ({why}). The album is in the music folder all the same; '
+        f'back it up later with:  {shlex.join(argv)}')
+    return False
+
+
+# --------------------------------------------------------------------------
 # Main
 
 def load_config():
@@ -1109,11 +1158,20 @@ def main(argv=None):
     ap.add_argument('--patience', type=float, default=1.0, metavar='X',
                     help='how long to keep re-reading a damaged track: X times its playing time '
                          f'(at least {MIN_TRACK_BUDGET // 60} min × X); 0 = never give up (default: 1)')
+    backup_opts = ap.add_mutually_exclusive_group()
+    backup_opts.add_argument('--backup', metavar='CMD',
+                             help='back the new album up with CMD after copying it to the music '
+                                  'folder (%%s = album folder, %%r = it relative to the music '
+                                  'folder); default: "backup_command" in ' + CONFIG_PATH)
+    backup_opts.add_argument('--no-backup', action='store_true',
+                             help='do not run the backup command this time')
     args = ap.parse_args(argv)
     own_tags = bool(args.artist or args.album)
     if own_tags and args.release:
         raise SystemExit('Give either --release (tags from that release) or --artist/--album '
                          '(your own tags), not both.')
+    config = load_config()
+    backup = chosen_backup(config, args.backup, args.no_backup)
 
     def log(msg=''):
         print(msg, flush=True)
@@ -1147,7 +1205,6 @@ def main(argv=None):
     log(f'AccurateRip: {len(pressings)} pressing(s) of this disc in the database'
         if pressings else 'AccurateRip: this disc is not in the database')
 
-    config = load_config()
     hello = gnudb_hello(config)
     releases = find_releases(toc, log, unknown_ok=bool(args.artist and args.album),
                              gnudb=lambda toc, log: lookup_gnudb(toc, log, hello=hello))
@@ -1194,6 +1251,9 @@ def main(argv=None):
             + (f'  ({t["ARTIST"]})' if t['ARTIST'] != album['ALBUMARTIST'] else ''))
     log(f'Into: {folder}' if folder else
         f'Into: (no music folder: set {MUSIC_DIR_ENV} or use --dest)')
+    backup_cmd = backup_argv(backup, folder, args.dest) if backup and folder else None
+    if backup_cmd:
+        log(f'Then backed up with: {shlex.join(backup_cmd)}')
 
     # ---- read offset
     offsets = config.setdefault('offsets', {})
@@ -1226,6 +1286,10 @@ def main(argv=None):
     if not os.path.isdir(args.dest):
         raise SystemExit(f'{args.dest} does not exist. Is the music drive shared with Linux? '
                          '(Files app → right-click the drive → Share with Linux)')
+    if backup_cmd and not shutil.which(backup_cmd[0]):
+        raise SystemExit(f'The backup command {backup_cmd[0]} is not installed (or not on PATH). '
+                         f'Install it, change "backup_command" in {CONFIG_PATH}, or rip with '
+                         '--no-backup.')
     names = [track_filename(album, t) for t in tracks]
     clash = [n for n in names if os.path.exists(os.path.join(folder, n))]
     if clash:
@@ -1307,7 +1371,8 @@ def main(argv=None):
     if bad:
         log('Tracks that may have errors (try cleaning the disc and ripping again): ' + ', '.join(bad))
     log('In Platter, rescan the music folder to see the new album.')
-    return 1 if bad else 0
+    backed_up = run_backup(backup_cmd, log) if backup_cmd else True
+    return 1 if bad or not backed_up else 0
 
 
 if __name__ == '__main__':
