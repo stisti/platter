@@ -202,10 +202,6 @@ function stripTrailingNuls(s) {
 }
 
 async function readItem(reader, type, kind, payload, length, out) {
-  const push = (key, value) => {
-    if (value) (out.tags[key] ??= []).push(value);
-  };
-
   if (type === 'covr') {
     if (length > 0 && out.picture === null) {
       out.picture = { offset: payload, length, mime: kind === TYPE_PNG ? 'image/png' : 'image/jpeg' };
@@ -213,25 +209,50 @@ async function readItem(reader, type, kind, payload, length, out) {
     return;
   }
   if (length <= 0 || length > MAX_TEXT) return;
+  const readValue = ITEM_MAP[type] ? readTextItem : ITEM_READERS[type];
+  if (!readValue) return;
+  const tag = await readValue(reader, { type, kind, payload, length }, out.tags);
+  if (tag?.value) (out.tags[tag.key] ??= []).push(tag.value);
+}
 
-  if (ITEM_MAP[type]) {
-    if (kind !== TYPE_UTF8 && kind !== TYPE_UTF16) return;
-    const b = await reader.read(payload, length);
-    push(ITEM_MAP[type], stripTrailingNuls((kind === TYPE_UTF16 ? utf16be : utf8).decode(b)).trim());
-  } else if (type === 'trkn' || type === 'disk') {
-    const b = await reader.read(payload, Math.min(length, 6));
-    if (b.length >= 4) {
-      const number = (b[2] << 8) | b[3];
-      const total = b.length >= 6 ? (b[4] << 8) | b[5] : 0;
-      if (number) push(type === 'trkn' ? 'TRACKNUMBER' : 'DISCNUMBER', total ? `${number}/${total}` : String(number));
-    }
-  } else if (type === 'gnre') {
-    // Numeric genre: an ID3v1 genre number, plus one.
-    const b = await reader.read(payload, Math.min(length, 2));
-    const index = b.length >= 2 ? ((b[0] << 8) | b[1]) - 1 : -1;
-    if (index >= 0 && index < ID3_GENRES.length && !out.tags.GENRE) push('GENRE', ID3_GENRES[index]);
-  } else if (type === 'cpil') {
-    const b = await reader.read(payload, 1);
-    if (b.length && b[0]) push('COMPILATION', '1');
-  }
+/**
+ * Readers for the items that are not plain text, by item type. Each returns
+ * the tag the item gives, or nothing.
+ * @type {Record<string, (reader: any, item: {type: string, kind: number, payload: number, length: number},
+ *   tags: Record<string, string[]>) => Promise<{key: string, value: string}|undefined>>}
+ */
+const ITEM_READERS = {
+  trkn: readNumberPair,
+  disk: readNumberPair,
+  gnre: readGenreNumber,
+  cpil: readCompilation,
+};
+
+async function readTextItem(reader, { type, kind, payload, length }) {
+  if (kind !== TYPE_UTF8 && kind !== TYPE_UTF16) return;
+  const b = await reader.read(payload, length);
+  return { key: ITEM_MAP[type], value: stripTrailingNuls((kind === TYPE_UTF16 ? utf16be : utf8).decode(b)).trim() };
+}
+
+/** Track or disc number, with the total when there is one: "3/12". */
+async function readNumberPair(reader, { type, payload, length }) {
+  const b = await reader.read(payload, Math.min(length, 6));
+  if (b.length < 4) return;
+  const number = (b[2] << 8) | b[3];
+  const total = b.length >= 6 ? (b[4] << 8) | b[5] : 0;
+  if (!number) return;
+  return { key: type === 'trkn' ? 'TRACKNUMBER' : 'DISCNUMBER', value: total ? `${number}/${total}` : String(number) };
+}
+
+/** Numeric genre: an ID3v1 genre number, plus one. A text genre wins over it. */
+async function readGenreNumber(reader, { payload, length }, tags) {
+  const b = await reader.read(payload, Math.min(length, 2));
+  const index = b.length >= 2 ? ((b[0] << 8) | b[1]) - 1 : -1;
+  if (index < 0 || index >= ID3_GENRES.length || tags.GENRE) return;
+  return { key: 'GENRE', value: ID3_GENRES[index] };
+}
+
+async function readCompilation(reader, { payload }) {
+  const b = await reader.read(payload, 1);
+  if (b.length && b[0]) return { key: 'COMPILATION', value: '1' };
 }
