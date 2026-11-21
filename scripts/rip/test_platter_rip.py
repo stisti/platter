@@ -572,13 +572,29 @@ class GnuDBTest(unittest.TestCase):
         self.assertIn('gnudb_email', str(e.exception))
 
     def test_refusal_dressed_as_a_match(self):
-        # What GnuDB really answers to a hello it does not accept.
+        # What GnuDB really answers to a hello it does not accept, to `cddb query`
+        # and `cddb read` alike (2026-11-21).
         lines = ["210 Found exact matches, list follows (until terminating `.')",
                  'data 3509526 500 Unknown application / developer email for platter-rip 1.0 '
                  'see https://gnudb.org/howtognudb.php', '.']
-        with self.assertRaises(pr.Unavailable) as e:
-            pr.parse_cddb_query(lines)
-        self.assertIn('Unknown application', str(e.exception))
+        for parse in (pr.parse_cddb_query, pr.parse_xmcd):
+            with self.assertRaises(pr.Unavailable, msg=parse.__name__) as e:
+                parse(lines)
+            self.assertIn('Unknown application', str(e.exception))
+
+    def test_read_without_an_entry_is_not_a_disc(self):
+        with self.assertRaises(pr.Unavailable):
+            pr.parse_xmcd(["210 Found exact matches, list follows (until terminating `.')", '.'])
+
+    def test_titles_that_look_like_codes_are_not_refusals(self):
+        entry = pr.parse_xmcd(self.entry('Band / 500 Miles', ['Song 500 Miles away', '404 Not Found']))
+        self.assertEqual(entry['TTITLE1'], '404 Not Found')
+        self.assertEqual(pr.parse_cddb_query(['210 Found', 'rock 12345678 The 500 / Best of', '.'])[0],
+                         [('rock', '12345678', 'The 500 / Best of')])
+
+    def test_client_name_is_descriptive(self):
+        # https://gnudb.org/howtognudb.php: long descriptive name, "v" + version.
+        self.assertRegex(pr.GNUDB_CLIENT, r'^PlatterCDRipper v\d+\.\d+\.\d+$')
 
     def test_escapes(self):
         entry = pr.parse_xmcd(self.entry('A / B', [], EXTD='line1\\nline2 back\\\\slash'))

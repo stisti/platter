@@ -242,7 +242,10 @@ What it does:
   anyway. GnuDB only answers requests that carry an email address, so it is
   asked only once you put yours in `~/.config/platter-rip.json` as
   `"gnudb_email": "you@example.com"`; without it, a MusicBrainz outage
-  simply stops the rip.
+  simply stops the rip. The ripper calls itself `PlatterCDRipper` to GnuDB;
+  "GnuDB refused: … Unknown application" means GnuDB does not (yet) accept
+  that name (see [GnuDB's developer policy](https://gnudb.org/howtognudb.php)),
+  and is treated like GnuDB being unavailable.
 - A disc no database knows becomes "Track 01…"; give `--artist` and
   `--album` for the folder and tags.
 - **`--artist` / `--album` always win.** Given either, the rip is tagged with
