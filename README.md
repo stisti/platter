@@ -357,7 +357,7 @@ app/
     version.js, update.js       the running version; noticing a newer published one
   vendor/sqlite/                SQLite compiled to WebAssembly (@sqlite.org/sqlite-wasm)
 server.mjs                      static file server for app/
-scripts/                        icons, service installer, command-line scanner
+scripts/                        icons, service installer, command-line scanner, parser fuzzing
 test/                           unit tests; test/e2e/ browser tests
 ```
 
@@ -376,6 +376,13 @@ npm run test:rip    # the CD ripper (Python, through uv)
 npm run typecheck   # JSDoc types of the pure modules (see below)
 npm run test:all    # all of the above
 ```
+
+The unit tests include fuzzing of the tag readers: damaged copies of
+generated FLAC, MP3 and M4A files must each give a well-formed result or the
+parser's own "not a … file" error. After refactoring a parser,
+`npm run fuzz:parsers -- --ref main` also checks that it reads every one of
+those files exactly as the version at that git ref does
+(`--rounds` and `--seed` vary the corpus).
 
 The browser tests need a Chromium: one downloaded by Playwright
 (`npx playwright-core install chromium`), a system one, or `CHROME_PATH=…`;
