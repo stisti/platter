@@ -11,10 +11,11 @@ import { db } from './db.js';
 
 const HANDLE_KEY = 'rootHandle';
 
-// How long to wait for the drive to answer a check. A drive that does not
-// answer at all counts as disconnected: ChromeOS can leave file system calls on
-// removable media pending indefinitely (seen after an OS update and reboot), and
-// waiting forever would keep the app from starting. watch() tries again later.
+// How long to wait for Chrome to answer a check. A folder it says nothing about
+// counts as disconnected: after a ChromeOS update and reboot, queryPermission()
+// on the folder handle saved before the update never settled (2026-11-22), and
+// waiting for it kept the app from starting. A newly picked handle is the cure,
+// so the app offers that (see `unanswered`); watch() keeps checking meanwhile.
 const CHECK_TIMEOUT_MS = 5000;
 
 export class SourceError extends Error {
@@ -36,6 +37,8 @@ export class MusicSource extends EventTarget {
     this._checking = null;
     this._timer = null;
     this.checkTimeoutMs = CHECK_TIMEOUT_MS;
+    /** True when the state is 'disconnected' only because Chrome gave no answer about the folder. */
+    this.unanswered = false;
   }
 
   static get supported() {
@@ -76,23 +79,43 @@ export class MusicSource extends EventTarget {
     return this.check();
   }
 
-  /** Re-evaluates the state. Concurrent calls share one check. */
+  /** Re-evaluates the state. Concurrent calls (for the same folder) share one check. */
   check() {
-    this._checking ??= this._evaluate().finally(() => (this._checking = null));
-    return this._checking;
+    if (this._checking?.root !== this.root) {
+      const root = this.root;
+      const promise = this._evaluate(root).finally(() => {
+        if (this._checking?.promise === promise) this._checking = null;
+      });
+      this._checking = { root, promise };
+    }
+    return this._checking.promise;
   }
 
-  async _evaluate() {
+  async _evaluate(root) {
     let state = 'none';
-    if (this.root) {
+    let unanswered = false;
+    if (root) {
+      // One question about a folder at a time: if Chrome never answers it,
+      // later checks wait on the same one instead of piling up new ones.
+      if (this._asking?.root !== root) {
+        const promise = this._ask(root).finally(() => {
+          if (this._asking?.promise === promise) this._asking = null;
+        });
+        this._asking = { root, promise };
+      }
       let timer;
-      const silent = new Promise((resolve) => (timer = setTimeout(resolve, this.checkTimeoutMs, 'disconnected')));
-      state = await Promise.race([this._ask(this.root), silent]);
+      const silence = new Promise((resolve) => (timer = setTimeout(resolve, this.checkTimeoutMs, null)));
+      const answer = await Promise.race([this._asking.promise, silence]);
       clearTimeout(timer);
+      unanswered = answer === null;
+      state = answer ?? 'disconnected';
     }
-    if (state !== this.state) {
+    // A folder chosen meanwhile has its own check; this answer is about the old one.
+    if (root !== this.root) return this.state;
+    if (state !== this.state || unanswered !== this.unanswered) {
       const previous = this.state;
       this.state = state;
+      this.unanswered = unanswered;
       this.dispatchEvent(new CustomEvent('change', { detail: { state, previous } }));
     }
     return state;

@@ -656,19 +656,43 @@ test('starting the app with the drive unplugged shows the library, not an error'
   });
 });
 
-test('a drive that never answers does not keep the app from starting', { skip }, async () => {
+test('a saved folder Chrome never answers about: the app still starts, and choosing the folder again fixes it', { skip }, async () => {
   await withApp(async (app) => {
     const { page } = app;
-    // As seen on ChromeOS after an OS update: calls on the folder handle stay pending forever.
+    // As seen on ChromeOS after an OS update (2026-11-22): queryPermission() on
+    // the handle saved before it never settles. A newly picked handle is fine.
     await page.addInitScript(() => {
-      const never = () => new Promise(() => {});
-      FileSystemDirectoryHandle.prototype.keys = () => ({ [Symbol.asyncIterator]: () => ({ next: never }) });
+      const fresh = new WeakSet();
+      const queryPermission = FileSystemDirectoryHandle.prototype.queryPermission;
+      let calls = 0;
+      FileSystemDirectoryHandle.prototype.queryPermission = function (options) {
+        if (fresh.has(this)) return queryPermission.call(this, options);
+        calls++;
+        return new Promise(() => {});
+      };
+      window.markFresh = (handle) => fresh.add(handle);
+      window.stuckPermissionCalls = () => calls;
     });
     await reloadApp(app);
+    await page.evaluate(() => {
+      const pick = window.showDirectoryPicker;
+      window.showDirectoryPicker = async (options) => {
+        const handle = await pick(options);
+        window.markFresh(handle);
+        return handle;
+      };
+    });
 
     assert.equal(await page.evaluate(() => window.platter.source.state), 'disconnected');
-    await page.waitForSelector('.banner-warn');
+    assert.match(await page.locator('.banner-warn').innerText(), /Chrome isn’t answering about the folder “USB Music”/);
     await expectCount(page, '.grid .card', 7, 'the library is browsable');
+    assert.equal(await page.evaluate(() => window.stuckPermissionCalls()), 1, 'checks wait on the unanswered question instead of asking again');
+
+    await page.locator('.banner-warn').getByRole('button', { name: 'Choose folder…' }).click();
+    await page.waitForFunction(() => window.platter.source.state === 'connected');
+    await waitForLibrary(page, SAMPLE_TRACKS);
+    await expectCount(page, '.banner-warn', 0);
+    assert.equal(await page.evaluate(() => window.platter.lib.tracks.size), SAMPLE_TRACKS, 'the library is kept');
   });
 });
 
