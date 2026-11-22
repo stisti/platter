@@ -656,6 +656,59 @@ test('starting the app with the drive unplugged shows the library, not an error'
   });
 });
 
+test('a saved folder Chrome never answers about: the app still starts, and choosing the folder again fixes it', { skip }, async () => {
+  await withApp(async (app) => {
+    const { page } = app;
+    // As seen on ChromeOS after an OS update (2026-11-22): queryPermission() on
+    // the handle saved before it never settles. A newly picked handle is fine.
+    await page.addInitScript(() => {
+      const fresh = new WeakSet();
+      const queryPermission = FileSystemDirectoryHandle.prototype.queryPermission;
+      let calls = 0;
+      FileSystemDirectoryHandle.prototype.queryPermission = function (options) {
+        if (fresh.has(this)) return queryPermission.call(this, options);
+        calls++;
+        return new Promise(() => {});
+      };
+      window.markFresh = (handle) => fresh.add(handle);
+      window.stuckPermissionCalls = () => calls;
+    });
+    await reloadApp(app);
+    await page.evaluate(() => {
+      const pick = window.showDirectoryPicker;
+      window.showDirectoryPicker = async (options) => {
+        const handle = await pick(options);
+        window.markFresh(handle);
+        return handle;
+      };
+    });
+
+    assert.equal(await page.evaluate(() => window.platter.source.state), 'disconnected');
+    assert.match(await page.locator('.banner-warn').innerText(), /Chrome isn’t answering about the folder “USB Music”/);
+    await expectCount(page, '.grid .card', 7, 'the library is browsable');
+    assert.equal(await page.evaluate(() => window.stuckPermissionCalls()), 1, 'checks wait on the unanswered question instead of asking again');
+
+    await page.locator('.banner-warn').getByRole('button', { name: 'Choose folder…' }).click();
+    await page.waitForFunction(() => window.platter.source.state === 'connected');
+    await waitForLibrary(page, SAMPLE_TRACKS);
+    await expectCount(page, '.banner-warn', 0);
+    assert.equal(await page.evaluate(() => window.platter.lib.tracks.size), SAMPLE_TRACKS, 'the library is kept');
+  });
+});
+
+test('if the saved library never opens, the app says so instead of staying blank', { skip }, async () => {
+  await withApp(async (app) => {
+    const { page } = app;
+    await page.addInitScript(() => {
+      indexedDB.open = () => ({});
+    });
+    await page.reload();
+    await page.waitForSelector('body:not(.booting)', { timeout: 20000 });
+    assert.match(await page.locator('.boot-stuck').innerText(), /Still waiting for: the saved library \(IndexedDB\)/);
+    assert.equal(await page.locator('.boot-stuck').getByRole('button', { name: 'Reload' }).count(), 1);
+  });
+});
+
 test('drive unplugged in the middle of a scan: nothing is lost, and the scan can be redone', { skip }, async () => {
   await withApp(async (app) => {
     const { page } = app;
