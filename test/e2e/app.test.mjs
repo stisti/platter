@@ -656,6 +656,35 @@ test('starting the app with the drive unplugged shows the library, not an error'
   });
 });
 
+test('a drive that never answers does not keep the app from starting', { skip }, async () => {
+  await withApp(async (app) => {
+    const { page } = app;
+    // As seen on ChromeOS after an OS update: calls on the folder handle stay pending forever.
+    await page.addInitScript(() => {
+      const never = () => new Promise(() => {});
+      FileSystemDirectoryHandle.prototype.keys = () => ({ [Symbol.asyncIterator]: () => ({ next: never }) });
+    });
+    await reloadApp(app);
+
+    assert.equal(await page.evaluate(() => window.platter.source.state), 'disconnected');
+    await page.waitForSelector('.banner-warn');
+    await expectCount(page, '.grid .card', 7, 'the library is browsable');
+  });
+});
+
+test('if the saved library never opens, the app says so instead of staying blank', { skip }, async () => {
+  await withApp(async (app) => {
+    const { page } = app;
+    await page.addInitScript(() => {
+      indexedDB.open = () => ({});
+    });
+    await page.reload();
+    await page.waitForSelector('body:not(.booting)', { timeout: 20000 });
+    assert.match(await page.locator('.boot-stuck').innerText(), /Still waiting for: the saved library \(IndexedDB\)/);
+    assert.equal(await page.locator('.boot-stuck').getByRole('button', { name: 'Reload' }).count(), 1);
+  });
+});
+
 test('drive unplugged in the middle of a scan: nothing is lost, and the scan can be redone', { skip }, async () => {
   await withApp(async (app) => {
     const { page } = app;

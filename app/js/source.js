@@ -11,6 +11,12 @@ import { db } from './db.js';
 
 const HANDLE_KEY = 'rootHandle';
 
+// How long to wait for the drive to answer a check. A drive that does not
+// answer at all counts as disconnected: ChromeOS can leave file system calls on
+// removable media pending indefinitely (seen after an OS update and reboot), and
+// waiting forever would keep the app from starting. watch() tries again later.
+const CHECK_TIMEOUT_MS = 5000;
+
 export class SourceError extends Error {
   /** @param {'none'|'needs-permission'|'disconnected'|'missing-file'|'unsupported'} code */
   constructor(code, cause) {
@@ -29,6 +35,7 @@ export class MusicSource extends EventTarget {
     this.root = null;
     this._checking = null;
     this._timer = null;
+    this.checkTimeoutMs = CHECK_TIMEOUT_MS;
   }
 
   static get supported() {
@@ -78,13 +85,10 @@ export class MusicSource extends EventTarget {
   async _evaluate() {
     let state = 'none';
     if (this.root) {
-      let permission = 'prompt';
-      try {
-        permission = await this.root.queryPermission({ mode: 'read' });
-      } catch {
-        // treat as not granted
-      }
-      state = permission === 'granted' ? await this._probe() : 'needs-permission';
+      let timer;
+      const silent = new Promise((resolve) => (timer = setTimeout(resolve, this.checkTimeoutMs, 'disconnected')));
+      state = await Promise.race([this._ask(this.root), silent]);
+      clearTimeout(timer);
     }
     if (state !== this.state) {
       const previous = this.state;
@@ -94,11 +98,22 @@ export class MusicSource extends EventTarget {
     return state;
   }
 
+  /** Asks Chrome whether `root` may be read and, if so, whether it is there. */
+  async _ask(root) {
+    let permission = 'prompt';
+    try {
+      permission = await root.queryPermission({ mode: 'read' });
+    } catch {
+      // treat as not granted
+    }
+    return permission === 'granted' ? this._probe(root) : 'needs-permission';
+  }
+
   /** Cheapest possible "is the folder really there?" test: list its first entry. */
-  async _probe() {
+  async _probe(root) {
     try {
       // eslint-disable-next-line no-unused-vars
-      for await (const _ of this.root.keys()) break;
+      for await (const _ of root.keys()) break;
       return 'connected';
     } catch (err) {
       return err?.name === 'NotAllowedError' || err?.name === 'SecurityError' ? 'needs-permission' : 'disconnected';

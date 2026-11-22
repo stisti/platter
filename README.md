@@ -78,6 +78,10 @@ Platter is built around the drive being removable:
 - Plugging the drive back in is noticed within a few seconds. Press play.
 - A scan that is interrupted by the drive disappearing never removes anything
   from the library.
+- A drive that does not answer within a few seconds counts as not connected,
+  so the app still opens. If Chrome does not answer at all (its saved data
+  cannot be opened), Platter shows what it is waiting for after ten seconds
+  instead of a blank window; reloading or restarting Chrome usually helps.
 
 After a restart Chrome may ask you to confirm access to the folder again
 (**Allow access** in the banner). Choosing *Allow on every visit* in Chrome's

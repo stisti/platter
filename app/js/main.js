@@ -715,7 +715,32 @@ function wireKeyboard() {
 
 let started = false;
 
+// The app stays hidden (body.booting) until start() has the first view ready.
+// If a step never finishes - IndexedDB or the drive not answering, as after a
+// ChromeOS update - the window would stay blank, so after a while the app is
+// shown anyway with a note saying what it is still waiting for. start() renders
+// over the note if the step does finish.
+const BOOT_WATCHDOG_MS = 10000;
+let bootStep = 'starting up';
+
+function watchBoot() {
+  setTimeout(() => {
+    if (started) return;
+    document.body.classList.remove('booting');
+    $('view').replaceChildren(
+      h('div', { class: 'page' }, h('div', { class: 'empty boot-stuck' },
+        icon('warning', 48),
+        h('h2', null, 'Platter is taking a long time to start'),
+        h('p', { class: 'muted' }, `Still waiting for: ${bootStep}.`),
+        h('p', { class: 'muted' }, 'Chrome has not answered yet. Reloading may help; if it does not, restart Chrome or the Chromebook.'),
+        h('button', { class: 'btn btn-primary', type: 'button', onClick: () => location.reload() }, icon('refresh', 18), 'Reload'))),
+    );
+    console.warn(`Platter start is still waiting for: ${bootStep}`);
+  }, BOOT_WATCHDOG_MS);
+}
+
 async function start() {
+  watchBoot();
   app.player = new Player({ source: app.source, getTrack: (id) => app.lib.tracks.get(id) });
   if (typeof app.prefs.volume === 'number') app.player.volume = app.prefs.volume;
 
@@ -738,6 +763,7 @@ async function start() {
   window.addEventListener('hashchange', () => render());
 
   // The saved library shows immediately, whether or not the drive is there.
+  bootStep = 'the saved library (IndexedDB)';
   try {
     await Promise.all([app.library.load(), app.covers.init(), app.playlists.init(), app.sql.init()]);
   } catch (err) {
@@ -745,8 +771,10 @@ async function start() {
     toast('Your saved library could not be opened. Scanning the drive will rebuild it.', { kind: 'error', duration: 8000 });
   }
   refreshPlaylistLinks();
+  bootStep = 'the saved play queue (IndexedDB)';
   await restoreSession();
 
+  bootStep = 'the music drive';
   await app.source.init();
   refreshChrome();
   render();
