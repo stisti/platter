@@ -389,6 +389,10 @@ def http_error(code, retry_after=None):
 class LookupTest(unittest.TestCase):
     """MusicBrainz busy: retry, then GnuDB, and never rip as "Unknown" by accident."""
 
+    def test_user_agent_has_a_contact(self):
+        # https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting: "Application/version ( contact )".
+        self.assertRegex(pr.USER_AGENT, r'^PlatterCDRipper/\d+\.\d+\.\d+ \( https://\S+ \)$')
+
     def setUp(self):
         from unittest import mock
         self.toc = pr.parse_toc(KITARO_TOC)

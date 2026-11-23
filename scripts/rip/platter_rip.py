@@ -59,7 +59,9 @@ CHUNK = 26                    # sectors per READ CD (61 KB, under the 64 KB limi
 CHUNK_ATTEMPTS = 3            # tries per chunk before going sector by sector
 REREAD_ROUNDS = 10            # most rounds of re-reading chunks that differ
 MIN_TRACK_BUDGET = 120        # seconds; a track may take max(this, its length) × --patience
-USER_AGENT = 'platter-rip/1.0 ( audio CD ripper )'
+# MusicBrainz wants "Application/version ( contact-url )" so it can reach the maintainers
+# (https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting). Same name as GNUDB_CLIENT.
+USER_AGENT = 'PlatterCDRipper/1.0.0 ( https://github.com/stisti/platter )'
 MUSIC_DIR_ENV = 'PLATTER_MUSIC_DIR'
 STAGING_ROOT = os.path.join(os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~/.cache'),
                             'platter-rip')
