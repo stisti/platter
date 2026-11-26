@@ -21,6 +21,8 @@
   "include": [
     "app/js/bytes.js",
     "app/js/coverpick.js",
+    "app/js/eq.js",
+    "app/js/equalizer.js",
     "app/js/flac.js",
     "app/js/genres.js",
     "app/js/id3.js",

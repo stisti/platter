@@ -17,6 +17,8 @@ import {
 } from './ui/views.js';
 import { queryView } from './ui/query.js';
 import { mountPlayerBar, mountQueuePanel } from './ui/playerbar.js';
+import { mountEqPanel } from './ui/eqpanel.js';
+import { normalizeEq } from './eq.js';
 import { VERSION } from './version.js';
 import { watchForUpdates } from './update.js';
 
@@ -151,6 +153,12 @@ const app = {
     ui.queuePanel.render();
   },
 
+  toggleEq(open = $('eq-panel').hidden) {
+    $('eq-panel').hidden = !open;
+    ui.playerBar.setEqOpen(open);
+    if (open) ui.eqPanel.focus();
+  },
+
   // ---------------------------------------------------------- playlists
 
   async createPlaylist(tracks = []) {
@@ -272,7 +280,7 @@ const app = {
   },
 };
 
-const ui = { playerBar: null, queuePanel: null };
+const ui = { playerBar: null, queuePanel: null, eqPanel: null };
 
 // ------------------------------------------------------------------ routing
 
@@ -753,12 +761,17 @@ async function start() {
   watchBoot();
   app.player = new Player({ source: app.source, getTrack: (id) => app.lib.tracks.get(id) });
   if (typeof app.prefs.volume === 'number') app.player.volume = app.prefs.volume;
+  const { equalizer } = app.player;
+  equalizer.set(normalizeEq(app.prefs.eq));
+  equalizer.addEventListener('change', () => app.setPref('eq', equalizer.settings));
+  equalizer.addEventListener('unavailable', () => toast('The equalizer isn’t available in this browser. The music plays without it.', { kind: 'error' }));
 
   buildSidebar();
   $('menu-button').addEventListener('click', () => document.body.classList.toggle('nav-open'));
   $('scrim').addEventListener('click', () => document.body.classList.remove('nav-open'));
   ui.playerBar = mountPlayerBar(app, $('playerbar'));
   ui.queuePanel = mountQueuePanel(app, $('queue'));
+  ui.eqPanel = mountEqPanel(app, $('eq-panel'));
   wireSource();
   wirePlayer();
   wireKeyboard();

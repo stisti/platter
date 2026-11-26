@@ -5,8 +5,12 @@
 // Files are opened from the drive only at the moment they are needed, so every
 // load can fail because the drive is gone. Such failures pause playback and
 // keep the position; they never clear the queue.
+//
+// When the equalizer is on, both elements play through it (equalizer.js);
+// every start of playback wakes it first.
 
 import { PlayQueue } from './queue.js';
+import { Equalizer } from './equalizer.js';
 
 const PRELOAD_SECONDS = 12;
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -34,8 +38,13 @@ export class Player extends EventTarget {
     this._resumeAt = 0;
     this._token = 0;
     this._failures = 0;
+    /** Counts pause() calls, so that a play still waiting for the equalizer can tell it was paused meanwhile. */
+    this._pauses = 0;
     this._volume = 1;
     this._muted = false;
+    this.equalizer = new Equalizer(this._els);
+    // The equalizer's sound engine would not start: the music plays, unheard.
+    this.equalizer.addEventListener('silent', () => this._onSilent());
 
     for (const el of this._els) {
       el.preload = 'auto';
@@ -142,6 +151,9 @@ export class Player extends EventTarget {
     if (!this.queue.current()) return;
     if (this._isCurrentLoaded()) {
       try {
+        const pauses = this._pauses;
+        await this.equalizer.wake();
+        if (pauses !== this._pauses) return;
         await this.el.play();
       } catch (err) {
         this._onPlayRejected(err);
@@ -153,6 +165,7 @@ export class Player extends EventTarget {
   }
 
   pause() {
+    this._pauses++;
     if (this.state === 'loading') {
       // Cancel the pending start; stay on the same track.
       this._token++;
@@ -335,6 +348,8 @@ export class Player extends EventTarget {
       return;
     }
     try {
+      await this.equalizer.wake();
+      if (token !== this._token) return;
       await el.play();
     } catch (err) {
       if (token === this._token) this._onPlayRejected(err);
@@ -348,6 +363,13 @@ export class Player extends EventTarget {
       this._setState('paused');
       this._emit('error', { kind: 'blocked' });
     }
+  }
+
+  _onSilent() {
+    if (this.state !== 'playing' && this.state !== 'loading') return;
+    this.el.pause();
+    this._setState('paused');
+    this._emit('error', { kind: 'blocked' });
   }
 
   _onLoadFailed(err, track) {
