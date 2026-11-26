@@ -53,6 +53,7 @@ is never uploaded: the page only reads the folder you choose, inside Chrome.
 - **⋮** or right-click on anything: *Play next*, *Add to queue*,
   *Add to playlist…*.
 - The **queue** button (bottom right) shows what is coming up.
+- The **equalizer** button next to it opens the equalizer (see below).
 - **Playlists**: the **+** in the sidebar, or *Add to playlist…* on any song,
   album, artist or genre. Reorder by dragging, or with *Move up / Move down*.
 - The Chromebook's media keys and the system media controls work.
@@ -66,6 +67,31 @@ is never uploaded: the page only reads the folder you choose, inside Chrome.
 | `Ctrl` + `←` / `→` | Previous / next track |
 | `M` | Mute |
 | `/` | Search |
+
+### Equalizer
+
+Ten bands, from 31 Hz (deep bass) to 16 kHz (the top of the treble), each
+±12 dB. Pick a preset or move the sliders; double-click a slider to put it
+back to 0. The curve above the sliders shows what the settings do across the
+whole range: neighbouring bands overlap, so two sliders up together lift the
+sound between them more than either alone. The switch turns the equalizer off
+without losing the settings, and the button in the player bar is lit while it
+is on. The setting is remembered.
+
+When a band is boosted, Platter turns all the music down by as much as the
+loudest point of the curve (the panel says by how much), so that a boost
+cannot push loud passages past the maximum and distort them. Boosting the bass
+therefore sounds like the rest getting quieter: turn the volume up to
+compensate.
+
+How it works: the browser's Web Audio filters compute the changed sound, ten
+"peaking" filters one after the other (`js/equalizer.js`). Nothing is changed
+in the files or in the Chromebook's audio settings. Until the equalizer is
+first switched on, music plays exactly as it did without it. After that, both
+of the player's audio elements play through the same filters, so moving from
+one track to the next works as before. Chrome only lets a page start sound
+after a click or key press; if its sound engine still won't start, Platter
+pauses with *Press play to start the music* instead of playing silently.
 
 ### When the drive is not connected
 
@@ -419,11 +445,12 @@ app/
     librarystate.js             the library being shown, and the only way to change it
     source.js                   the folder handle: permission and connected/disconnected state
     queue.js, player.js         play queue; audio playback with next-track preloading
+    eq.js, equalizer.js         equalizer bands, presets and their maths; the Web Audio filters
     playlists.js, db.js         playlists; IndexedDB storage
     genres.js, sqlrows.js       genre families; the library as SQL tables (schema and rows)
     sqldb.js                    SQLite in memory: loading it, filling it, running queries
     librarysql.js               SQL over the library: kept fresh, setup SQL, saved queries, results as songs/albums
-    main.js, ui/                wiring, views, player bar, the Query page (ui/query.js)
+    main.js, ui/                wiring, views, player bar, equalizer panel, the Query page (ui/query.js)
     version.js, update.js       the running version; noticing a newer published one
   vendor/sqlite/                SQLite compiled to WebAssembly (@sqlite.org/sqlite-wasm)
 server.mjs                      static file server for app/

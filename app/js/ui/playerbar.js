@@ -56,6 +56,9 @@ export function mountPlayerBar(app, host) {
     player.volume = level;
     app.setPref('volume', level);
   });
+  const eqBtn = iconButton('equalizer', 'Equalizer', () => app.toggleEq(), { size: 20, cls: 'toggle pb-eq' });
+  eqBtn.setAttribute('aria-haspopup', 'dialog');
+  eqBtn.setAttribute('aria-expanded', 'false');
   const queueBtn = iconButton('queue', 'Queue', () => app.toggleQueue(), { size: 20, cls: 'toggle' });
 
   host.append(
@@ -66,7 +69,7 @@ export function mountPlayerBar(app, host) {
       h('div', { class: 'pb-controls' }, shuffleBtn, prevBtn, playBtn, nextBtn, repeatBtn),
       h('div', { class: 'pb-seek' }, elapsed, seek, total),
     ),
-    h('div', { class: 'pb-right' }, volumeBtn, volume, queueBtn),
+    h('div', { class: 'pb-right' }, volumeBtn, volume, eqBtn, queueBtn),
   );
 
   // --- updates
@@ -140,6 +143,13 @@ export function mountPlayerBar(app, host) {
     setRange(volume, player.muted ? 0 : player.volume);
   };
 
+  // The equalizer button lights up while the equalizer changes the sound.
+  const updateEq = () => {
+    const { enabled } = player.equalizer.settings;
+    eqBtn.classList.toggle('on', enabled);
+    eqBtn.title = enabled ? 'Equalizer (on)' : 'Equalizer (off)';
+  };
+
   // --- system media controls
   let positionSentAt = 0;
   const updateMediaSession = () => {
@@ -201,12 +211,14 @@ export function mountPlayerBar(app, host) {
   });
   player.addEventListener('queuechange', updateModes);
   player.addEventListener('volumechange', updateVolume);
+  player.equalizer.addEventListener('change', updateEq);
   app.covers.addEventListener('change', updateTrack);
 
   updateTrack();
   updateState();
   updateModes();
   updateVolume();
+  updateEq();
 
   return {
     refresh: updateTrack,
@@ -214,6 +226,7 @@ export function mountPlayerBar(app, host) {
       queueBtn.classList.toggle('on', open);
       queueBtn.setAttribute('aria-pressed', String(open));
     },
+    setEqOpen: (open) => eqBtn.setAttribute('aria-expanded', String(open)),
   };
 }
 

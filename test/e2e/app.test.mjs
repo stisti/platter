@@ -1102,3 +1102,222 @@ test('query: unsaved setup SQL is kept across a reload until it is discarded or 
     assert.equal(await panelOpen(), false);
   });
 });
+
+// ------------------------------------------------------------- equalizer
+
+const FLAT = new Array(10).fill(0);
+const MORE_BASS = [6, 5, 4, 2, 0, 0, 0, 0, 0, 0];
+const eqState = (page) =>
+  page.evaluate(() => {
+    const eq = window.platter.player.equalizer;
+    return { enabled: eq.settings.enabled, gains: eq.settings.gains, routed: eq.routed, context: eq.context?.state ?? null };
+  });
+const setEq = (page, settings) => page.evaluate((s) => window.platter.player.equalizer.set(s), settings);
+
+/**
+ * How loud (RMS, dB full scale) the music leaving the equalizer is right now,
+ * after any change has had time to glide in. The test tracks are a steady
+ * 440 Hz tone; a window that catches a track starting over reads quieter, so
+ * the loudest of a few readings counts.
+ */
+const eqLevel = (page) =>
+  page.evaluate(async () => {
+    const eq = window.platter.player.equalizer;
+    if (!window.eqProbe) {
+      window.eqProbe = new AnalyserNode(eq.context, { fftSize: 4096 });
+      eq.output.connect(window.eqProbe);
+    }
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    await wait(250);
+    let loudest = -Infinity;
+    for (let i = 0; i < 4; i++) {
+      await wait(100);
+      const data = new Float32Array(window.eqProbe.fftSize);
+      window.eqProbe.getFloatTimeDomainData(data);
+      let sum = 0;
+      for (const x of data) sum += x * x;
+      loudest = Math.max(loudest, 10 * Math.log10(sum / data.length));
+    }
+    return loudest;
+  });
+/** What eq.js says these gains do to the 440 Hz test tone, headroom included. */
+const expectedAt440 = (page, gains) =>
+  page.evaluate(async (gains) => {
+    const { responseDb, headroomDb } = await import('./js/eq.js');
+    const rate = window.platter.player.equalizer.context.sampleRate;
+    return responseDb(gains, 440, rate) - headroomDb(gains, rate);
+  }, gains);
+const assertNear = (actual, expected, tolerance, what) =>
+  assert.ok(Math.abs(actual - expected) <= tolerance, `${what}: expected ${expected.toFixed(2)} ± ${tolerance}, got ${actual.toFixed(2)}`);
+
+test('equalizer: off at first; the panel switches it on, sets presets and bands; it is all there after a restart', { skip }, async () => {
+  await withApp(async (app) => {
+    const { page } = app;
+    const panel = page.locator('#eq-panel');
+    const eqButton = bar(page).locator('.pb-eq');
+    const onOff = panel.getByRole('switch', { name: 'Equalizer on' });
+    const preset = panel.getByRole('combobox', { name: 'Preset' });
+    await page.goto(albumUrl(app, 'pink floyd', 'animals'));
+    await page.locator('.track', { hasText: 'Dogs' }).click();
+    await waitForState(page, 'playing');
+
+    // Off: the music plays straight to the speakers, as before there was an equalizer.
+    assert.deepEqual(await eqState(page), { enabled: false, gains: FLAT, routed: false, context: null });
+    assert.equal(await eqButton.getAttribute('title'), 'Equalizer (off)');
+
+    await eqButton.click();
+    await panel.waitFor();
+    assert.equal(await eqButton.getAttribute('aria-expanded'), 'true');
+    assert.equal(await preset.inputValue(), 'flat');
+    await onOff.check();
+    assert.deepEqual(await eqState(page), { enabled: true, gains: FLAT, routed: true, context: 'running' });
+    assert.equal(await eqButton.getAttribute('title'), 'Equalizer (on)');
+    assert.equal((await playerState(page)).state, 'playing', 'switching on mid-song keeps it playing');
+
+    // A preset sets every band, and the boost is made room for.
+    await preset.selectOption('bass');
+    assert.deepEqual((await eqState(page)).gains, MORE_BASS);
+    await expectTexts(page, '#eq-panel .eq-value', ['+6', '+5', '+4', '+2', '0', '0', '0', '0', '0', '0']);
+    assert.match(await panel.locator('.eq-headroom').innerText(), /^Music turned down \d+\.\d dB to make room for the boost$/);
+
+    // Moving one slider makes it a custom setting; a double-click puts that band back to 0 dB.
+    const band1k = panel.getByRole('slider', { name: '1k Hz' });
+    await band1k.evaluate((input) => {
+      input.value = '-4.5';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    assert.equal((await eqState(page)).gains[5], -4.5);
+    assert.equal(await panel.locator('select option:checked').innerText(), 'Custom');
+    assert.equal(await panel.locator('.eq-value').nth(5).innerText(), '−4.5');
+    await band1k.dblclick();
+    assert.deepEqual((await eqState(page)).gains, MORE_BASS);
+    assert.equal(await preset.inputValue(), 'bass');
+
+    // Off keeps the settings for next time.
+    await onOff.uncheck();
+    assert.deepEqual(await eqState(page), { enabled: false, gains: MORE_BASS, routed: true, context: 'running' });
+    assert.equal(await panel.locator('.eq-headroom').innerText(), '');
+    await onOff.check();
+
+    // Escape closes the panel, and so does a click elsewhere.
+    await page.keyboard.press('Escape');
+    assert.equal(await panel.isHidden(), true);
+    assert.equal(await eqButton.getAttribute('aria-expanded'), 'false');
+    await eqButton.click();
+    await panel.waitFor();
+    await page.locator('.hero h1').click();
+    assert.equal(await panel.isHidden(), true);
+
+    // Restart: the setting is back, but nothing goes through Web Audio until something plays.
+    await reloadApp(app);
+    assert.deepEqual(await eqState(page), { enabled: true, gains: MORE_BASS, routed: false, context: null });
+    assert.equal(await eqButton.getAttribute('title'), 'Equalizer (on)');
+    await bar(page).getByRole('button', { name: 'Play', exact: true }).click();
+    await waitForState(page, 'playing');
+    assert.deepEqual(await eqState(page), { enabled: true, gains: MORE_BASS, routed: true, context: 'running' });
+  });
+});
+
+test('equalizer: the filters really change the sound, by as much as the curve says', { skip }, async () => {
+  await withApp(async (app) => {
+    const { page } = app;
+    await page.goto(albumUrl(app, 'pink floyd', 'animals'));
+    await page.locator('.track', { hasText: 'Dogs' }).click();
+    await waitForState(page, 'playing');
+    await setEq(page, { enabled: true, gains: FLAT });
+    // Keep the 1.5 s tone going while it is measured.
+    await page.evaluate(() => window.platter.player._els.forEach((el) => (el.loop = true)));
+
+    const flat = await eqLevel(page);
+    assert.ok(flat > -30, `the tone comes through: ${flat} dB`);
+
+    // Cutting the bands either side of 440 Hz makes the tone quieter, by what eq.js computes.
+    const cut = [0, 0, 0, -12, -12, 0, 0, 0, 0, 0];
+    await setEq(page, { enabled: true, gains: cut });
+    const cutBy = (await eqLevel(page)) - flat;
+    assert.ok(cutBy < -10, `cut by ${cutBy} dB`);
+    assertNear(cutBy, await expectedAt440(page, cut), 0.5, 'cut');
+
+    // Boosting the 500 Hz band: the headroom turns the music down by about as
+    // much as the boost, so the tone ends up about as loud as before, not clipped.
+    const boost = [0, 0, 0, 0, 12, 0, 0, 0, 0, 0];
+    await setEq(page, { enabled: true, gains: boost });
+    assertNear((await eqLevel(page)) - flat, await expectedAt440(page, boost), 0.5, 'boost minus headroom');
+
+    // Off: back to unchanged, with the settings kept.
+    await setEq(page, { enabled: false, gains: boost });
+    assertNear(await eqLevel(page), flat, 0.2, 'switched off');
+
+    // The volume slider still works with the music going through Web Audio.
+    await page.evaluate(() => (window.platter.player.volume = 0.5));
+    assertNear((await eqLevel(page)) - flat, -6.02, 0.3, 'half volume');
+
+    // eq.js computes the same curve as the browser's own filters (to draw it and to size the headroom).
+    const worst = await page.evaluate(async () => {
+      const { responseDb, curveFrequencies, PRESETS } = await import('./js/eq.js');
+      const eq = window.platter.player.equalizer;
+      const rate = eq.context.sampleRate;
+      let worst = 0;
+      for (const { gains } of PRESETS) {
+        eq.set({ enabled: true, gains });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const freqs = new Float32Array(curveFrequencies(80, rate));
+        const browser = new Float32Array(freqs.length);
+        for (const filter of eq.filters) {
+          const magnitude = new Float32Array(freqs.length);
+          filter.getFrequencyResponse(freqs, magnitude, new Float32Array(freqs.length));
+          magnitude.forEach((m, i) => (browser[i] += 20 * Math.log10(m)));
+        }
+        freqs.forEach((f, i) => (worst = Math.max(worst, Math.abs(browser[i] - responseDb(gains, f, rate)))));
+      }
+      return worst;
+    });
+    assert.ok(worst < 0.05, `eq.js and the browser differ by up to ${worst} dB`);
+  });
+});
+
+test('equalizer: an album plays through it from track to track, on both of the player\'s audio elements', { skip }, async () => {
+  await withApp(async (app) => {
+    const { page } = app;
+    // Switched on before anything plays: the first play builds it.
+    await setEq(page, { enabled: true, gains: MORE_BASS });
+    assert.equal((await eqState(page)).routed, false);
+    await page.goto(albumUrl(app, 'pink floyd', 'animals'));
+    await page.locator('.hero').getByRole('button', { name: 'Play', exact: true }).click();
+    await waitForState(page, 'playing');
+    assert.deepEqual(await eqState(page), { enabled: true, gains: MORE_BASS, routed: true, context: 'running' });
+    const first = await page.evaluate(() => window.platter.player._active);
+    assert.ok((await eqLevel(page)) > -30, 'track 1 is heard');
+
+    // The next track was preloaded on the other element and takes over from it.
+    await waitForTitle(page, 'Dogs');
+    assert.notEqual(await page.evaluate(() => window.platter.player._active), first, 'played from the standby element');
+    assert.ok((await eqLevel(page)) > -30, 'track 2 is heard');
+    await waitForTitle(page, 'Pigs (Three Different Ones)');
+    assert.ok((await eqLevel(page)) > -30, 'track 3 is heard');
+    await waitForState(page, 'paused');
+  });
+});
+
+test('equalizer: if its sound engine will not start, playback pauses and says so instead of playing silently', { skip }, async () => {
+  await withApp(async (app) => {
+    const { page } = app;
+    await setEq(page, { enabled: true, gains: MORE_BASS });
+    await page.goto(albumUrl(app, 'pink floyd', 'animals'));
+    await page.locator('.track', { hasText: 'Dogs' }).click();
+    await waitForState(page, 'playing');
+    await bar(page).getByRole('button', { name: 'Pause' }).click();
+    await waitForState(page, 'paused');
+
+    // As when Chrome won't let a page start sound: the context stays suspended.
+    await page.evaluate(async () => {
+      const { context } = window.platter.player.equalizer;
+      context.resume = () => new Promise(() => {});
+      await context.suspend();
+    });
+    await bar(page).getByRole('button', { name: 'Play', exact: true }).click();
+    await waitForState(page, 'playing');
+    await waitForState(page, 'paused');
+    await expectToast(page, /Press play to start the music/);
+  });
+});
